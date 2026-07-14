@@ -56,6 +56,7 @@ def build_container(*, config: AppConfig) -> AppContainer:
             period_seconds=app_config.mdblist.rate_limit.per_seconds,
             name="mdblist",
         ),
+        daily_reserve=app_config.mdblist.daily_reserve,
     )
 
     pmdb_api_gate = ServiceGate(

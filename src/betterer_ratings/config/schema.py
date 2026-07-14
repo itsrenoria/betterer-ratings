@@ -282,6 +282,7 @@ class IMDbConfig:
 class MDBListConfig:
     rate_limit: RateLimitConfig
     batch_size: int
+    daily_reserve: int = 0
 
     @property
     def base_url(self) -> str:
@@ -297,13 +298,21 @@ class MDBListConfig:
 
     @staticmethod
     def from_mapping(value: Mapping[str, Any]) -> "MDBListConfig":
-        _reject_unknown_keys(value, allowed={"rate_limit", "batch_size"}, path="mdblist")
+        _reject_unknown_keys(
+            value, allowed={"rate_limit", "batch_size", "daily_reserve"}, path="mdblist"
+        )
+        daily_reserve = 0
+        if value.get("daily_reserve") is not None:
+            daily_reserve = max(
+                0, min(999, _as_int(value.get("daily_reserve"), path="mdblist.daily_reserve"))
+            )
         return MDBListConfig(
             rate_limit=RateLimitConfig.from_mapping(
                 _require_mapping(value.get("rate_limit"), path="mdblist.rate_limit"),
                 path="mdblist.rate_limit",
             ),
             batch_size=max(1, min(200, _as_int(value.get("batch_size"), path="mdblist.batch_size"))),
+            daily_reserve=daily_reserve,
         )
 
 

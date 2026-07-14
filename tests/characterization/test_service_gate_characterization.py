@@ -144,6 +144,59 @@ def test_error_status_forces_immediate_header_state_persist():
     assert db.updates[-1]["rate_remaining"] == 41
 
 
+def test_daily_reserve_pauses_before_quota_hits_zero():
+    db = _FakeDB()
+    gate = ServiceGate(
+        "mdblist",
+        db,
+        _FakeLimiter(),
+        daily_reserve=400,
+        now_epoch_fn=lambda: 1000,
+        parse_int_fn=_parse_int,
+        to_iso_fn=str,
+    )
+
+    # Still above the reserve floor: no pause.
+    gate.observe_headers(
+        {"x-ratelimit-limit": "1000", "x-ratelimit-remaining": "401", "x-ratelimit-reset": "5000"},
+        200,
+    )
+    assert gate.pause_remaining() == 0
+
+    # Drops to the reserve floor: pause until the provider's reset.
+    gate.observe_headers(
+        {"x-ratelimit-limit": "1000", "x-ratelimit-remaining": "400", "x-ratelimit-reset": "5000"},
+        200,
+    )
+    assert gate.paused_until == 5000
+    assert "reserve floor" in gate.pause_reason.lower()
+
+
+def test_zero_reserve_preserves_pause_at_zero_only():
+    db = _FakeDB()
+    gate = ServiceGate(
+        "mdblist",
+        db,
+        _FakeLimiter(),
+        now_epoch_fn=lambda: 1000,
+        parse_int_fn=_parse_int,
+        to_iso_fn=str,
+    )
+
+    gate.observe_headers(
+        {"x-ratelimit-limit": "1000", "x-ratelimit-remaining": "1", "x-ratelimit-reset": "5000"},
+        200,
+    )
+    assert gate.pause_remaining() == 0
+
+    gate.observe_headers(
+        {"x-ratelimit-limit": "1000", "x-ratelimit-remaining": "0", "x-ratelimit-reset": "5000"},
+        200,
+    )
+    assert gate.paused_until == 5000
+    assert gate.pause_reason == "Daily Limit Reached"
+
+
 def test_mdblist_observe_headers_logs_quota_state(caplog):
     db = _FakeDB()
     gate = ServiceGate(

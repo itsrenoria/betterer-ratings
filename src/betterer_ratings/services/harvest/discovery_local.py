@@ -95,9 +95,12 @@ def mdblist_daily_quota_pause_until(
 
     if rate_remaining == 0 and rate_reset > int(now_ts):
         return rate_reset
-    if paused_until > int(now_ts) and (
-        pause_reason == "daily limit reached" or rate_remaining == 0
-    ):
+    is_quota_pause = (
+        pause_reason == "daily limit reached"
+        or pause_reason.startswith("daily reserve floor reached")
+        or rate_remaining == 0
+    )
+    if paused_until > int(now_ts) and is_quota_pause:
         return paused_until
     return 0
 

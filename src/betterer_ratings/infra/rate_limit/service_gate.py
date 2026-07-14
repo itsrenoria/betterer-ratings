@@ -17,6 +17,7 @@ class ServiceGate:
         db: Any,
         limiter: Any,
         *,
+        daily_reserve: int = 0,
         now_epoch_fn: Callable[[], int] = now_epoch,
         parse_int_fn: Callable[[Any], Optional[int]] = parse_int,
         to_iso_fn: Callable[[int], str] = to_iso,
@@ -25,6 +26,7 @@ class ServiceGate:
         self.name = name
         self.db = db
         self.limiter = limiter
+        self.daily_reserve = max(0, int(daily_reserve))
         self._now_epoch = now_epoch_fn
         self._parse_int = parse_int_fn
         self._to_iso = to_iso_fn
@@ -127,15 +129,22 @@ class ServiceGate:
                     },
                 )
 
-        if remaining == 0:
+        # Pause once the provider's shared daily quota is drained down to our
+        # reserve floor, so other consumers of the same API key (e.g. the user's
+        # own watchlist/history syncs) keep the reserved headroom. With
+        # daily_reserve=0 this preserves the original behaviour (pause at 0).
+        if remaining is not None and remaining <= self.daily_reserve:
             reset_ts = reset or (self._now_epoch() + 300)
-            self.pause_until_timestamp(
-                reset_ts,
-                "Daily Limit Reached",
+            reason = (
+                "Daily Limit Reached"
+                if self.daily_reserve <= 0
+                else f"Daily reserve floor reached ({remaining} left, reserve {self.daily_reserve})"
             )
+            self.pause_until_timestamp(reset_ts, reason)
             self._logger.warning(
-                "[%s] Daily limit reached; paused until %s.",
+                "[%s] %s; paused until %s.",
                 self.name,
+                reason,
                 self._to_iso(self.paused_until),
             )
 
