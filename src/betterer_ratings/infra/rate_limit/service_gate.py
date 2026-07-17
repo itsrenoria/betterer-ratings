@@ -134,7 +134,10 @@ class ServiceGate:
         # own watchlist/history syncs) keep the reserved headroom. With
         # daily_reserve=0 this preserves the original behaviour (pause at 0).
         if remaining is not None and remaining <= self.daily_reserve:
-            reset_ts = reset or (self._now_epoch() + 300)
+            now_ts = self._now_epoch()
+            reset_ts = (
+                next_reset if next_reset is not None and next_reset > now_ts else now_ts + 300
+            )
             reason = (
                 "Daily Limit Reached"
                 if self.daily_reserve <= 0

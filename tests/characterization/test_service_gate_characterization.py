@@ -172,6 +172,52 @@ def test_daily_reserve_pauses_before_quota_hits_zero():
     assert "reserve floor" in gate.pause_reason.lower()
 
 
+def test_daily_reserve_reuses_known_reset_when_threshold_response_omits_header():
+    db = _FakeDB()
+    gate = ServiceGate(
+        "mdblist",
+        db,
+        _FakeLimiter(),
+        daily_reserve=400,
+        now_epoch_fn=lambda: 1000,
+        parse_int_fn=_parse_int,
+        to_iso_fn=str,
+    )
+
+    gate.observe_headers(
+        {"x-ratelimit-remaining": "401", "x-ratelimit-reset": "5000"},
+        200,
+    )
+    gate.observe_headers({"x-ratelimit-remaining": "400"}, 200)
+
+    assert gate.rate_reset == 5000
+    assert gate.paused_until == 5000
+
+
+def test_daily_reserve_ignores_expired_known_reset_when_threshold_header_is_missing():
+    clock = {"now": 1000}
+    db = _FakeDB()
+    gate = ServiceGate(
+        "mdblist",
+        db,
+        _FakeLimiter(),
+        daily_reserve=400,
+        now_epoch_fn=lambda: clock["now"],
+        parse_int_fn=_parse_int,
+        to_iso_fn=str,
+    )
+
+    gate.observe_headers(
+        {"x-ratelimit-remaining": "401", "x-ratelimit-reset": "1500"},
+        200,
+    )
+    clock["now"] = 2000
+    gate.observe_headers({"x-ratelimit-remaining": "400"}, 200)
+
+    assert gate.rate_reset == 1500
+    assert gate.paused_until == 2300
+
+
 def test_zero_reserve_preserves_pause_at_zero_only():
     db = _FakeDB()
     gate = ServiceGate(
