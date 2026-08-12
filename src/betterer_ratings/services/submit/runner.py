@@ -1,9 +1,120 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from betterer_ratings.core.clock import now_epoch
+
+
+QUEUE_STALL_ALERT_SECONDS = 300
+QUEUE_STALL_REPEAT_SECONDS = 900
+QUEUE_FAILED_REPEAT_SECONDS = 3600
+
+
+@dataclass
+class QueueAlertMonitor:
+    stall_threshold_seconds: int = QUEUE_STALL_ALERT_SECONDS
+    stall_repeat_seconds: int = QUEUE_STALL_REPEAT_SECONDS
+    failed_repeat_seconds: int = QUEUE_FAILED_REPEAT_SECONDS
+    last_progress_at: int | None = None
+    last_day: str | None = None
+    last_submitted: tuple[int, int, int] | None = None
+    last_stall_alert_at: int = 0
+    stall_alert_active: bool = False
+    last_failed_counts: tuple[int, int, int] = field(default_factory=lambda: (0, 0, 0))
+    last_failed_alert_at: int = 0
+
+    def observe(
+        self,
+        *,
+        now_ts: int,
+        counts: Mapping[str, int],
+        summary: Mapping[str, int | str],
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        submitted = (
+            int(summary["ratings_today"]),
+            int(summary["mappings_today"]),
+            int(summary["episode_ratings_today"]),
+        )
+        day = str(summary["day"])
+
+        progressed = False
+        if self.last_progress_at is None:
+            self.last_progress_at = int(now_ts)
+        elif day != self.last_day or submitted != self.last_submitted:
+            progressed = True
+            stalled_seconds = max(0, int(now_ts) - int(self.last_progress_at))
+            self.last_progress_at = int(now_ts)
+            if self.stall_alert_active:
+                events.append(
+                    {
+                        "event": "queue.alert.recovered",
+                        "alert_type": "throughput_stalled",
+                        "stalled_seconds": stalled_seconds,
+                    }
+                )
+            self.stall_alert_active = False
+            self.last_stall_alert_at = 0
+
+        self.last_day = day
+        self.last_submitted = submitted
+
+        failed_counts = (
+            int(counts["ratings_failed"]),
+            int(counts["mappings_failed"]),
+            int(counts["episode_ratings_failed"]),
+        )
+        failed_total = sum(failed_counts)
+        failed_changed = failed_counts != self.last_failed_counts
+        if failed_total > 0 and (
+            failed_changed
+            or self.last_failed_alert_at <= 0
+            or int(now_ts) - self.last_failed_alert_at >= self.failed_repeat_seconds
+        ):
+            events.append(
+                {
+                    "event": "queue.alert.failed",
+                    "alert_type": "failed_rows",
+                    "failed_total": failed_total,
+                    "ratings_failed": failed_counts[0],
+                    "mappings_failed": failed_counts[1],
+                    "episode_ratings_failed": failed_counts[2],
+                }
+            )
+            self.last_failed_alert_at = int(now_ts)
+        elif failed_total == 0:
+            self.last_failed_alert_at = 0
+        self.last_failed_counts = failed_counts
+
+        if not _queue_has_active_work(counts):
+            self.last_progress_at = int(now_ts)
+            self.stall_alert_active = False
+            self.last_stall_alert_at = 0
+            return events
+
+        stalled_seconds = max(0, int(now_ts) - int(self.last_progress_at or now_ts))
+        if (
+            not progressed
+            and stalled_seconds >= self.stall_threshold_seconds
+            and (
+                self.last_stall_alert_at <= 0
+                or int(now_ts) - self.last_stall_alert_at >= self.stall_repeat_seconds
+            )
+        ):
+            events.append(
+                {
+                    "event": "queue.alert.stalled",
+                    "alert_type": "throughput_stalled",
+                    "stalled_seconds": stalled_seconds,
+                    **{key: int(value) for key, value in counts.items()},
+                }
+            )
+            self.last_stall_alert_at = int(now_ts)
+            self.stall_alert_active = True
+
+        return events
 
 
 def format_queue_status(counts: Mapping[str, int]) -> str:
@@ -80,12 +191,15 @@ async def queue_progress_loop(
     db: Any,
     logger: Any,
     interval_seconds: int = 5,
+    now_epoch_fn: Any = now_epoch,
+    alert_monitor: QueueAlertMonitor | None = None,
 ) -> None:
     last_snapshot: tuple[int, ...] | None = None
     last_submission_snapshot: tuple[int | str, ...] | None = None
     last_submission_log_ts = 0
+    monitor = alert_monitor or QueueAlertMonitor()
     while not stop_event.is_set():
-        now_ts = now_epoch()
+        now_ts = int(now_epoch_fn())
         counts = db.queue_counts()
         snapshot = _queue_snapshot(counts)
         has_active_work = _queue_has_active_work(counts)
@@ -97,6 +211,31 @@ async def queue_progress_loop(
             )
             last_snapshot = snapshot
         summary = db.submission_summary(now_ts)
+        for alert in monitor.observe(now_ts=now_ts, counts=counts, summary=summary):
+            event = str(alert["event"])
+            if event == "queue.alert.failed":
+                logger.warning(
+                    "[Submitter] Queue alert: failed rows detected "
+                    "(ratings=%s mappings=%s episode_ratings=%s total=%s).",
+                    alert["ratings_failed"],
+                    alert["mappings_failed"],
+                    alert["episode_ratings_failed"],
+                    alert["failed_total"],
+                    extra=alert,
+                )
+            elif event == "queue.alert.stalled":
+                logger.warning(
+                    "[Submitter] Queue alert: no successful submissions for %ss while work is active. %s.",
+                    alert["stalled_seconds"],
+                    format_queue_status(counts),
+                    extra=alert,
+                )
+            elif event == "queue.alert.recovered":
+                logger.info(
+                    "[Submitter] Queue throughput recovered after a %ss stall.",
+                    alert["stalled_seconds"],
+                    extra=alert,
+                )
         submission_snapshot = _submission_snapshot(summary)
         if (
             submission_snapshot != last_submission_snapshot

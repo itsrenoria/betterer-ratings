@@ -24,6 +24,7 @@ class HTTPClient:
         parse_retry_after_fn: Callable[[Optional[str], int], int] = parse_retry_after,
         sanitize_url_for_logs_fn: Callable[[str], str] = sanitize_url_for_logs,
         is_network_unavailable_error_fn: Callable[[Exception], bool] = is_network_unavailable_error,
+        client_factory: Optional[Callable[[], httpx.AsyncClient]] = None,
         logger: Optional[logging.Logger] = None,
     ):
         self.timeout_seconds = timeout_seconds
@@ -36,6 +37,9 @@ class HTTPClient:
         self._sanitize_url_for_logs = sanitize_url_for_logs_fn
         self._is_network_unavailable_error = is_network_unavailable_error_fn
         self._logger = logger or logging.getLogger("betterer-ratings")
+        self._client_factory = client_factory or (
+            lambda: httpx.AsyncClient(timeout=self.timeout_seconds)
+        )
         self._client: httpx.AsyncClient | None = None
         self._client_lock = asyncio.Lock()
 
@@ -52,8 +56,17 @@ class HTTPClient:
             return self._client
         async with self._client_lock:
             if self._client is None:
-                self._client = httpx.AsyncClient(timeout=self.timeout_seconds)
+                self._client = self._client_factory()
             return self._client
+
+    async def _recycle_client(self, expected_client: httpx.AsyncClient) -> bool:
+        """Replace a suspect shared pool once, even when many requests fail together."""
+        async with self._client_lock:
+            if self._client is not expected_client:
+                return False
+            self._client = self._client_factory()
+        await expected_client.aclose()
+        return True
 
     async def aclose(self) -> None:
         async with self._client_lock:
@@ -75,6 +88,7 @@ class HTTPClient:
     ) -> APIResponse:
         last_response: Optional[APIResponse] = None
         safe_url = self._sanitize_url_for_logs(url)
+        consecutive_pool_errors = 0
 
         for attempt in range(self.max_retries):
             if gate is not None:
@@ -98,6 +112,36 @@ class HTTPClient:
                 )
             except httpx.HTTPError as exc:
                 sleep_for = min(60, (2**attempt) + random.random())
+                error_type = exc.__class__.__name__
+                error_repr = repr(exc)
+                recyclable_pool_error = isinstance(
+                    exc,
+                    (httpx.ReadError, httpx.RemoteProtocolError),
+                )
+                consecutive_pool_errors = (
+                    consecutive_pool_errors + 1 if recyclable_pool_error else 0
+                )
+                pool_recycled = False
+                if consecutive_pool_errors >= 2 and attempt < self.max_retries - 1:
+                    pool_recycled = await self._recycle_client(client)
+                    consecutive_pool_errors = 0
+                    if pool_recycled:
+                        self._logger.info(
+                            "HTTP connection pool recycled after repeated transport failures: "
+                            "%s %s error_type=%s error_repr=%s",
+                            method,
+                            safe_url,
+                            error_type,
+                            error_repr,
+                            extra={
+                                "event": "http.connection_pool_recycled",
+                                "method": method,
+                                "endpoint": safe_url,
+                                "error_type": error_type,
+                                "error_repr": error_repr,
+                                "attempt": attempt + 1,
+                            },
+                        )
                 if self._is_network_unavailable_error(exc):
                     pause_for = int(max(5, min(60, sleep_for)))
                     if gate is not None:
@@ -105,23 +149,48 @@ class HTTPClient:
                     gate_name = gate.name if gate is not None else "http"
                     throttle_key = f"{gate_name}:{method}:{safe_url}:{exc.__class__.__name__}"
                     if self._should_log_network_error(throttle_key):
-                        self._logger.warning(
-                            "Network unavailable for %s %s (attempt %s/%s). Backing off %.1fs: %s",
+                        self._logger.info(
+                            "Network unavailable for %s %s (attempt %s/%s). "
+                            "Backing off %.1fs: error_type=%s error_repr=%s",
                             method,
                             safe_url,
                             attempt + 1,
                             self.max_retries,
                             sleep_for,
-                            exc,
+                            error_type,
+                            error_repr,
+                            extra={
+                                "event": "http.transport_retry",
+                                "method": method,
+                                "endpoint": safe_url,
+                                "attempt": attempt + 1,
+                                "max_attempts": self.max_retries,
+                                "backoff_seconds": sleep_for,
+                                "error_type": error_type,
+                                "error_repr": error_repr,
+                                "pool_recycled": pool_recycled,
+                            },
                         )
                 else:
                     self._logger.warning(
-                        "HTTP error calling %s %s (attempt %s/%s): %s",
+                        "HTTP error calling %s %s (attempt %s/%s): "
+                        "error_type=%s error_repr=%s",
                         method,
                         safe_url,
                         attempt + 1,
                         self.max_retries,
-                        exc,
+                        error_type,
+                        error_repr,
+                        extra={
+                            "event": "http.error",
+                            "method": method,
+                            "endpoint": safe_url,
+                            "attempt": attempt + 1,
+                            "max_attempts": self.max_retries,
+                            "error_type": error_type,
+                            "error_repr": error_repr,
+                            "pool_recycled": pool_recycled,
+                        },
                     )
 
                 if attempt == self.max_retries - 1:
@@ -133,6 +202,8 @@ class HTTPClient:
                     )
                 await asyncio.sleep(sleep_for)
                 continue
+
+            consecutive_pool_errors = 0
 
             normalized_headers = {str(k).lower(): str(v) for k, v in raw_resp.headers.items()}
             data: Any = None

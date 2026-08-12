@@ -26,6 +26,11 @@ from betterer_ratings.providers.pmdb_submission_rating import (
 
 
 class PMDBClient:
+    _USER_AGENT = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
+    )
+
     def __init__(
         self,
         *,
@@ -51,10 +56,16 @@ class PMDBClient:
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": self._USER_AGENT,
         }
 
     def _auth_headers(self) -> Dict[str, str]:
-        return {"Authorization": f"Bearer {self.api_key}"}
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Accept": "application/json",
+            "User-Agent": self._USER_AGENT,
+        }
 
     async def _post_with_gates(
         self,

@@ -202,10 +202,19 @@ async def submit_episode_ratings_batch(
         return
 
     status_code = int(response.status or 0)
-    retryable = status_code in {0, 401, 429, 500, 502, 503, 504, 207}
+    content_type = response.headers.get("content-type", "").lower()
+    response_text = (response.text or "").lower()
+    cloudflare_challenge = status_code == 403 and (
+        "text/html" in content_type
+        or "just a moment" in response_text
+        or "cf-ray" in response.headers
+    )
+    retryable = status_code in {0, 401, 429, 500, 502, 503, 504, 207} or cloudflare_challenge
     error_code = extract_error_code_fn(response.data, response.text or "")
     base_retry_after = (
-        parse_retry_after_fn(response.headers.get("retry-after"), 30) if status_code == 429 else 30
+        parse_retry_after_fn(response.headers.get("retry-after"), 30)
+        if status_code == 429
+        else (300 if cloudflare_challenge else 30)
     )
 
     for row in unresolved_rows:

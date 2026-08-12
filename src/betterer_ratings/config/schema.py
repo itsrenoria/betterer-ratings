@@ -167,7 +167,7 @@ class RuntimeConfig:
 
     @property
     def submitter_in_flight_lease_seconds(self) -> int:
-        return 300
+        return 1200
 
     @property
     def submitter_max_retry_attempts(self) -> int:

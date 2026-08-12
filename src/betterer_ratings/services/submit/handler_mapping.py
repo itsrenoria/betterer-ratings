@@ -1,8 +1,75 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Set
+from typing import Any, Callable, Optional, Sequence, Set
 
 from betterer_ratings.core.clock import format_duration
+
+
+async def submit_mapping_group(
+    *,
+    rows: Sequence[Any],
+    pmdb_client: Any,
+    db: Any,
+    submit_mapping_fn: Callable[..., Any],
+    now_epoch_fn: Callable[[], int],
+    logger: Any,
+) -> None:
+    """Resolve all existing mappings for a title with one PMDB lookup."""
+    if not rows:
+        return
+
+    first = rows[0]
+    tmdb_id = int(first["tmdb_id"])
+    media_type = str(first["media_type"])
+    lookup = await pmdb_client._fetch_existing_mappings(tmdb_id, media_type)
+
+    unresolved = list(rows)
+    resolved_count = 0
+    if lookup.status == 200 and isinstance(lookup.data, dict):
+        submitted_at = now_epoch_fn()
+        for row in list(unresolved):
+            id_type = str(row["id_type"])
+            id_value = str(row["id_value"])
+            entries = pmdb_client._extract_mappings_for_type(lookup.data, id_type)
+            matching_entry = next(
+                (
+                    entry
+                    for entry in entries
+                    if pmdb_client._mapping_entry_matches_value(entry, id_value)
+                ),
+                None,
+            )
+            if matching_entry is None:
+                continue
+            db.mark_mapping_submitted(
+                tmdb_id,
+                media_type,
+                id_type,
+                submitted_at,
+                pmdb_item_id=pmdb_client._extract_entry_id(matching_entry),
+            )
+            unresolved.remove(row)
+            resolved_count += 1
+
+    if resolved_count:
+        logger.info(
+            "[Submitter] Mapping preflight resolved existing: %s %s resolved=%s missing=%s",
+            media_type,
+            tmdb_id,
+            resolved_count,
+            len(unresolved),
+            extra={
+                "event": "mapping.preflight_resolved",
+                "entity": "mapping",
+                "media_type": media_type,
+                "tmdb_id": tmdb_id,
+                "resolved": resolved_count,
+                "missing": len(unresolved),
+            },
+        )
+
+    for row in unresolved:
+        await submit_mapping_fn(row=row)
 
 
 async def submit_mapping(

@@ -87,7 +87,25 @@ def observe_submission_response(
     error_code = client._extract_error_code(response.data, response.text or "")
     error_suffix = f" code={error_code}" if error_code else ""
 
-    if response.status == 429:
+    content_type = response.headers.get("content-type", "").lower()
+    response_text = (response.text or "").lower()
+    is_cloudflare_challenge = response.status == 403 and (
+        "text/html" in content_type
+        or "just a moment" in response_text
+        or "cf-ray" in response.headers
+    )
+
+    if is_cloudflare_challenge:
+        retry_after = 300
+        client.api_gate.pause_for(retry_after, "Cloudflare challenge")
+        contribution_gate.pause_for(retry_after, "Cloudflare challenge")
+        client._logger.warning(
+            "[PMDB] Cloudflare challenge on %s %s. Pausing PMDB gates for %ss.",
+            method,
+            safe_endpoint,
+            retry_after,
+        )
+    elif response.status == 429:
         retry_after = parse_retry_after(response.headers.get("retry-after"), 5)
         client.api_gate.pause_for(retry_after, "PMDB 429")
         contribution_gate.pause_for(retry_after, "PMDB contribution 429")

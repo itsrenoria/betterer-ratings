@@ -7,6 +7,7 @@ from betterer_ratings.core.clock import local_day_key, now_epoch
 from betterer_ratings.infra.db.queue_claims import (
     claim_next_pending_episode_ratings_batch,
     claim_next_pending_mapping,
+    claim_next_pending_mapping_group,
     claim_next_pending_rating,
 )
 from betterer_ratings.infra.db.queue_metrics import (
@@ -61,6 +62,9 @@ class LocalDatabaseQueueMixin:
 
     def claim_next_pending_mapping(self, now_ts: int) -> Optional[sqlite3.Row]:
         return claim_next_pending_mapping(self.conn, now_ts=now_ts)
+
+    def claim_next_pending_mapping_group(self, now_ts: int) -> List[sqlite3.Row]:
+        return claim_next_pending_mapping_group(self.conn, now_ts=now_ts)
 
     def claim_next_pending_episode_ratings_batch(
         self,

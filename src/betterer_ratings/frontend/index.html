@@ -63,7 +63,30 @@ a{color:inherit;text-decoration:none}
   content:'';position:absolute;left:7px;top:3px;width:2px;height:8px;
   background:var(--emerald);border-radius:2px;transform-origin:bottom center;transform:rotate(-35deg);
 }
-.topnav-brand span{font-weight:700;font-size:1rem;letter-spacing:-.02em}
+.topnav-brand>span{font-weight:700;font-size:1rem;letter-spacing:-.02em}
+.activity-matrix{
+  --matrix-glow:rgba(84,209,138,.08);
+  display:grid;grid-template-columns:repeat(5,3px);grid-auto-rows:3px;gap:2px;
+  padding:4px;margin-left:2px;border:1px solid #272d36;border-radius:5px;
+  background:#090b0e;box-shadow:inset 0 0 8px rgba(0,0,0,.7),0 0 10px var(--matrix-glow);
+}
+.matrix-dot{
+  width:3px;height:3px;border-radius:1px;background:var(--dot-color,#303641);
+  opacity:.18;box-shadow:none;transition:opacity .3s ease,background-color .3s ease,box-shadow .3s ease;
+}
+.matrix-dot.steady{opacity:.68;box-shadow:0 0 3px var(--dot-color)}
+.matrix-dot.queued{opacity:.38}
+.matrix-dot.active{
+  opacity:1;box-shadow:0 0 5px var(--dot-color);
+  animation:matrix-pulse 1.65s ease-in-out infinite;animation-delay:var(--pulse-delay,0s);
+}
+.matrix-dot.alert{
+  --dot-color:var(--red)!important;opacity:1;box-shadow:0 0 6px var(--red);
+  animation:matrix-alert 1.1s ease-in-out infinite;animation-delay:var(--pulse-delay,0s);
+}
+@keyframes matrix-pulse{0%,100%{opacity:.42}45%{opacity:1}65%{opacity:.72}}
+@keyframes matrix-alert{0%,100%{opacity:.55}50%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.matrix-dot.active,.matrix-dot.alert{animation:none}}
 .topnav-right{display:flex;align-items:center;gap:16px}
 .topnav-status{display:flex;align-items:center;gap:6px;font-size:.7rem;color:var(--text-secondary)}
 .topnav-status .dot{width:6px;height:6px;border-radius:50%;background:var(--emerald);animation:pulse-dot 2s infinite}
@@ -299,6 +322,7 @@ a{color:inherit;text-decoration:none}
   <div class="topnav-brand">
     <span class="brand-mark" aria-hidden="true"></span>
     <span>betterer-ratings</span>
+    <div class="activity-matrix" id="activity-matrix" role="img" aria-label="Activity status is loading" title="Activity status is loading" aria-live="polite"></div>
   </div>
   <div class="topnav-right">
     <div class="topnav-status">
@@ -441,6 +465,22 @@ document.querySelectorAll('.tab-btn').forEach(btn=>{
 
 // ─── State ───
 let state = {};
+let matrixPreviousTotals = null;
+
+const MATRIX_LAYOUT = [
+  'tmdb','tmdb','mdblist','pmdbApi','pmdbApi',
+  'tmdb','ratings','ratings','mappings','pmdbApi',
+  'mdblist','ratings','health','mappings','pmdbMappings',
+  'episodes','ratings','ratings','mappings','pmdbMappings',
+  'episodes','episodes','pmdbRatings','pmdbRatings','pmdbMappings',
+];
+
+const MATRIX_COLORS = {
+  tmdb:'var(--blue)', mdblist:'var(--amber)', pmdbApi:'var(--violet)',
+  pmdbRatings:'var(--emerald)', pmdbMappings:'var(--violet)',
+  ratings:'var(--emerald)', mappings:'var(--violet)', episodes:'var(--amber)',
+  health:'var(--emerald)',
+};
 
 async function fetchJSON(url) {
   try { const r = await fetch(url); if(!r.ok) throw 0; return await r.json(); }
@@ -466,6 +506,7 @@ async function loadAll() {
 
 // ─── Render ───
 function render() {
+  renderActivityMatrix();
   renderStats();
   renderTrend();
   renderTitlesBars();
@@ -476,6 +517,79 @@ function render() {
   renderProviderSummary();
   renderProviders();
   renderRecent();
+}
+
+function renderActivityMatrix() {
+  const matrix = document.getElementById('activity-matrix');
+  if (!matrix) return;
+
+  const q = state.stats?.queue || {};
+  const services = Object.fromEntries((state.services?.services || []).map(s => [s.service || s.name, s]));
+  const totals = {
+    ratings:Number(state.stats?.summary?.ratings_today || 0),
+    mappings:Number(state.stats?.summary?.mappings_today || 0),
+    episodes:Number(state.stats?.summary?.episode_ratings_today || 0),
+  };
+  const recentlyAdvanced = {
+    ratings:matrixPreviousTotals !== null && totals.ratings > matrixPreviousTotals.ratings,
+    mappings:matrixPreviousTotals !== null && totals.mappings > matrixPreviousTotals.mappings,
+    episodes:matrixPreviousTotals !== null && totals.episodes > matrixPreviousTotals.episodes,
+  };
+
+  const providerState = name => {
+    const svc = services[name];
+    if (!svc) return {mode:'idle'};
+    const status = Number(svc.last_status || 0);
+    if (svc.is_paused || status >= 400) return {mode:'alert'};
+    if (status >= 200 && status < 300) {
+      const updated = svc.updated_at ? epochMillis(svc.updated_at) : 0;
+      return {mode:updated && Date.now() - updated < 15000 ? 'active' : 'steady'};
+    }
+    return {mode:'queued'};
+  };
+  const queueState = (kind, progressKind) => {
+    const failed = Number(q[`${kind}_failed`] || 0);
+    const inFlight = Number(q[`${kind}_in_flight`] || 0);
+    const pending = Number(q[`${kind}_pending`] || 0);
+    if (failed > 0) return {mode:'alert'};
+    if (inFlight > 0 || recentlyAdvanced[progressKind]) return {mode:'active'};
+    if (pending > 0) return {mode:'queued'};
+    return {mode:'idle'};
+  };
+
+  const cellStates = {
+    tmdb:providerState('tmdb'),
+    mdblist:providerState('mdblist'),
+    pmdbApi:providerState('pmdb_api'),
+    pmdbRatings:providerState('pmdb_ratings'),
+    pmdbMappings:providerState('pmdb_mappings'),
+    ratings:queueState('ratings', 'ratings'),
+    mappings:queueState('mappings', 'mappings'),
+    episodes:queueState('episode_ratings', 'episodes'),
+  };
+  const failedRows = Number(q.ratings_failed || 0) + Number(q.mappings_failed || 0) + Number(q.episode_ratings_failed || 0);
+  const problemProviders = Object.values(services).filter(s => s.is_paused || Number(s.last_status || 0) >= 400).length;
+  const inFlight = Number(q.ratings_in_flight || 0) + Number(q.mappings_in_flight || 0) + Number(q.episode_ratings_in_flight || 0);
+  const pending = Number(q.ratings_pending || 0) + Number(q.mappings_pending || 0) + Number(q.episode_ratings_pending || 0);
+  const dataUnavailable = !state.stats || !state.services;
+  const hasProblem = failedRows > 0 || problemProviders > 0 || dataUnavailable;
+  cellStates.health = {mode:hasProblem ? 'alert' : inFlight > 0 ? 'active' : 'steady'};
+
+  matrix.innerHTML = MATRIX_LAYOUT.map((role, index) => {
+    const item = cellStates[role] || {mode:'idle'};
+    return `<span class="matrix-dot ${item.mode}" style="--dot-color:${MATRIX_COLORS[role]};--pulse-delay:-${(index % 7) * 0.17}s" aria-hidden="true"></span>`;
+  }).join('');
+
+  const providerSummary = dataUnavailable
+    ? 'dashboard data unavailable'
+    : problemProviders
+    ? `${problemProviders} provider warning${problemProviders === 1 ? '' : 's'}`
+    : 'providers healthy';
+  const label = `Activity: ${inFlight} in flight, ${pending} queued, ${failedRows} failed; ${providerSummary}`;
+  matrix.setAttribute('aria-label', label);
+  matrix.title = `${label}. Blue: TMDB; amber: MDBList and episodes; violet: PMDB and mappings; green: ratings and health; red: paused or failed.`;
+  matrix.style.setProperty('--matrix-glow', hasProblem ? 'rgba(228,91,101,.16)' : inFlight > 0 ? 'rgba(84,209,138,.14)' : 'rgba(84,209,138,.06)');
+  matrixPreviousTotals = totals;
 }
 
 // ── Stats Hero Row ──

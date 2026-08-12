@@ -17,11 +17,11 @@ from betterer_ratings.services.submit import maintenance as submit_maintenance
 from betterer_ratings.services.submit import retry_policy as submit_retry_policy
 from betterer_ratings.services.submit import setup as submit_setup
 from betterer_ratings.services.submit.handler_episode_batch import submit_episode_ratings_batch
-from betterer_ratings.services.submit.handler_mapping import submit_mapping
+from betterer_ratings.services.submit.handler_mapping import submit_mapping, submit_mapping_group
 from betterer_ratings.services.submit.handler_rating import submit_rating
 from betterer_ratings.services.submit.lease_recovery import lease_recovery_loop
 from betterer_ratings.services.submit.runner import run_submitter
-from betterer_ratings.services.submit.worker import worker_loop
+from betterer_ratings.services.submit.worker import queue_order_for_worker, worker_loop
 
 LOGGER = logging.getLogger("betterer-ratings")
 
@@ -114,16 +114,27 @@ class Submitter:
             logger=LOGGER,
         )
 
-    async def _worker_loop(self, stop_event: asyncio.Event, _worker_id: int) -> None:
+    async def _worker_loop(self, stop_event: asyncio.Event, worker_id: int) -> None:
         await worker_loop(
             stop_event=stop_event,
             db=self.db,
             poll_seconds=self.poll_seconds,
             now_epoch_fn=now_epoch,
-            submit_mapping_fn=self._submit_mapping,
+            submit_mapping_group_fn=self._submit_mapping_group,
             submit_rating_fn=self._submit_rating,
             submit_episode_ratings_batch_fn=self._submit_episode_ratings_batch,
             episode_batch_size=50,
+            queue_order=queue_order_for_worker(worker_id, self.worker_count),
+        )
+
+    async def _submit_mapping_group(self, rows: Sequence[sqlite3.Row]) -> None:
+        await submit_mapping_group(
+            rows=rows,
+            pmdb_client=self.pmdb_client,
+            db=self.db,
+            submit_mapping_fn=self._submit_mapping,
+            now_epoch_fn=now_epoch,
+            logger=LOGGER,
         )
 
     async def _submit_mapping(self, row: sqlite3.Row) -> None:

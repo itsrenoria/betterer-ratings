@@ -164,11 +164,22 @@ class ServiceGate:
             now_ts = self._now_epoch()
             if now_ts - self._last_pause_log >= 30:
                 reason = self.pause_reason or "Rate limit pause"
-                self._logger.warning(
+                log_fn = (
+                    self._logger.info
+                    if reason.strip().lower() == "network unavailable"
+                    else self._logger.warning
+                )
+                log_fn(
                     "[%s] Paused for %s (%s).",
                     self.name,
                     format_duration(remaining),
                     reason,
+                    extra={
+                        "event": "service.paused",
+                        "service": self.name,
+                        "pause_reason": reason,
+                        "pause_remaining_seconds": remaining,
+                    },
                 )
                 self._last_pause_log = now_ts
             await asyncio.sleep(min(5, remaining))
