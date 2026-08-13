@@ -211,6 +211,26 @@ def test_mark_rating_submitted_updates_metrics_and_submitted_titles(local_db):
     assert dict(submitted_title) == {"tmdb_id": 4, "media_type": "movie"}
 
 
+def test_clear_rating_pmdb_item_id_nulls_out_cached_id(local_db):
+    db = local_db
+    _save_enriched(db, tmdb_id=5, media_type="movie", now_ts=100, ratings={"IM": 73.0})
+    db.mark_rating_submitted(
+        tmdb_id=5,
+        media_type="movie",
+        label="IM",
+        submitted_at=1700000000,
+        pmdb_item_id="foreign-rating-id",
+    )
+
+    db.clear_rating_pmdb_item_id(tmdb_id=5, media_type="movie", label="IM")
+
+    row = db.conn.execute(
+        "SELECT pmdb_item_id, pmdb_status FROM ratings WHERE tmdb_id = ? AND media_type = ? AND label = ?",
+        (5, "movie", "IM"),
+    ).fetchone()
+    assert dict(row) == {"pmdb_item_id": None, "pmdb_status": "submitted"}
+
+
 def test_mapping_retry_submitted_and_failed_transitions(local_db):
     db = local_db
     _save_enriched(db, tmdb_id=20, media_type="movie", now_ts=100, mappings={"tvdb": "20"})

@@ -85,3 +85,56 @@ def test_submit_rating_recreates_when_cached_pmdb_id_is_not_owned():
             "label": "IM",
         }
     ]
+    assert result.stale_cached_item_id is True
+
+
+class _StaleRatingIdThenFailingPostClient(_StaleRatingIdClient):
+    """Same not-owned delete, but the recreate POST also fails (non-duplicate)."""
+
+    async def _post_with_gates(
+        self,
+        *,
+        url: str,
+        payload: dict[str, object],
+        contribution_gate: object,
+    ) -> APIResponse:
+        self.posts.append(payload)
+        return APIResponse(
+            status=500,
+            headers={},
+            data={"error": "some other failure"},
+            text='{"error":"some other failure"}',
+        )
+
+    def _to_submit_result(self, response: APIResponse, endpoint: str = "") -> PMDBSubmitResult:
+        return PMDBSubmitResult(
+            success=False,
+            retryable=True,
+            retry_after_seconds=30,
+            duplicate_or_exists=False,
+            error_text=response.text,
+            item_id=None,
+            status_code=response.status,
+            endpoint=endpoint,
+        )
+
+
+def test_submit_rating_flags_stale_cached_id_even_when_recreate_fails():
+    """Regression: a not-owned 403 must be flagged so callers can stop trusting the
+    cached id, even when the follow-up recreate attempt does not succeed either."""
+    client = _StaleRatingIdThenFailingPostClient()
+
+    result = asyncio.run(
+        submit_rating(
+            client,
+            tmdb_id=936370,
+            media_type="movie",
+            label="IM",
+            score=63.0,
+            existing_pmdb_item_id="stale-rating-id",
+        )
+    )
+
+    assert result.success is False
+    assert result.stale_cached_item_id is True
+    assert client.deleted_ids == ["stale-rating-id"]

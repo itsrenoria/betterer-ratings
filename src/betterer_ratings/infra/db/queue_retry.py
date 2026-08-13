@@ -89,6 +89,24 @@ def mark_episode_rating_retry(
         )
 
 
+def clear_rating_pmdb_item_id(
+    conn: sqlite3.Connection,
+    *,
+    tmdb_id: int,
+    media_type: str,
+    label: str,
+) -> None:
+    with conn:
+        conn.execute(
+            """
+            UPDATE ratings
+            SET pmdb_item_id = NULL
+            WHERE tmdb_id = ? AND media_type = ? AND label = ?
+            """,
+            (tmdb_id, media_type, label),
+        )
+
+
 def mark_rating_failed(
     conn: sqlite3.Connection,
     *,
