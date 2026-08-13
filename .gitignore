@@ -27,5 +27,5 @@ imdb/
 .worktrees/
 
 # Local docs + reference workspace
-docs/
+/docs/
 tmp/
