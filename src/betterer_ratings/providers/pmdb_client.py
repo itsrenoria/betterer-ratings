@@ -118,6 +118,10 @@ class PMDBClient:
         return provider_pmdb_helpers.extract_error_code(payload, text)
 
     @staticmethod
+    def _is_cloudflare_challenge(response: APIResponse) -> bool:
+        return provider_pmdb_helpers.is_cloudflare_challenge(response)
+
+    @staticmethod
     def _is_create_failed_rating(result: PMDBSubmitResult) -> bool:
         return provider_pmdb_helpers.is_create_failed_rating(result)
 

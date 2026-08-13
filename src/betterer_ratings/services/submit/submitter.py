@@ -181,5 +181,6 @@ class Submitter:
             parse_retry_after_fn=parse_retry_after,
             pmdb_submit_result_cls=PMDBSubmitResult,
             extract_error_code_fn=PMDBClient._extract_error_code,
+            is_cloudflare_challenge_fn=PMDBClient._is_cloudflare_challenge,
             logger=LOGGER,
         )
