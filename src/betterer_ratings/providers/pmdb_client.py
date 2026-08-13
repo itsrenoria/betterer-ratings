@@ -165,6 +165,20 @@ class PMDBClient:
     async def _fetch_existing_mappings(self, tmdb_id: int, media_type: str) -> APIResponse:
         return await provider_pmdb_lookup.fetch_existing_mappings(self, tmdb_id, media_type)
 
+    async def _fetch_mapping_owners(
+        self,
+        *,
+        id_type: str,
+        id_value: str,
+        media_type: str,
+    ) -> APIResponse:
+        return await provider_pmdb_lookup.fetch_mapping_owners(
+            self,
+            id_type=id_type,
+            id_value=id_value,
+            media_type=media_type,
+        )
+
     @staticmethod
     def _extract_ratings_for_label(payload: Any, label: str) -> list[Dict[str, Any]]:
         return provider_pmdb_helpers.extract_ratings_for_label(payload, label)
@@ -180,6 +194,10 @@ class PMDBClient:
     @staticmethod
     def _mapping_entry_matches_value(entry: Dict[str, Any], id_value: str) -> bool:
         return provider_pmdb_helpers.mapping_entry_matches_value(entry, id_value)
+
+    @staticmethod
+    def _mapping_lookup_owned_by(payload: Any, tmdb_id: int, media_type: str) -> bool:
+        return provider_pmdb_helpers.mapping_lookup_owned_by(payload, tmdb_id, media_type)
 
     async def confirm_rating_exists(
         self,

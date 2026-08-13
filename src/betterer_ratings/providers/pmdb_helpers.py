@@ -249,6 +249,30 @@ def rating_entry_matches_score(entry: Dict[str, Any], score: float) -> bool:
     return existing_tenths == target_tenths
 
 
+def mapping_lookup_owned_by(payload: Any, tmdb_id: int, media_type: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return False
+
+    wanted_media_type = media_type.strip().lower()
+    for entry in results:
+        if not isinstance(entry, dict):
+            continue
+        raw_tmdb_id = entry.get("tmdb_id")
+        if raw_tmdb_id is None:
+            continue
+        try:
+            entry_tmdb_id = int(raw_tmdb_id)
+        except (TypeError, ValueError):
+            continue
+        entry_media_type = str(entry.get("media_type", "")).strip().lower()
+        if entry_tmdb_id == int(tmdb_id) and entry_media_type == wanted_media_type:
+            return True
+    return False
+
+
 def mapping_entry_matches_value(entry: Dict[str, Any], id_value: str) -> bool:
     existing_value = first_non_empty(
         entry.get("value"),

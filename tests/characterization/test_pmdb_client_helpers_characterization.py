@@ -129,6 +129,31 @@ def test_rating_and_mapping_entry_matchers_use_current_normalization_rules():
     assert m.PMDBClient._mapping_entry_matches_value({"value": "tt123"}, "tt999") is False
 
 
+def test_mapping_lookup_owned_by_matches_tmdb_id_and_media_type_case_insensitively():
+    payload = {
+        "results": [
+            {"tmdb_id": 46195, "media_type": "TV"},
+            {"tmdb_id": 290689, "media_type": "tv"},
+        ],
+        "total": 2,
+    }
+    assert m.PMDBClient._mapping_lookup_owned_by(payload, 46195, "tv") is True
+    assert m.PMDBClient._mapping_lookup_owned_by(payload, 46195, "movie") is False
+    assert m.PMDBClient._mapping_lookup_owned_by(payload, 999999, "tv") is False
+
+
+def test_mapping_lookup_owned_by_ignores_malformed_entries_and_payloads():
+    assert m.PMDBClient._mapping_lookup_owned_by({"results": []}, 1, "movie") is False
+    assert m.PMDBClient._mapping_lookup_owned_by({"total": 0}, 1, "movie") is False
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": ["not-a-dict", {"tmdb_id": "abc", "media_type": "movie"}]}, 1, "movie"
+    ) is False
+    assert m.PMDBClient._mapping_lookup_owned_by(None, 1, "movie") is False
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": "46195", "media_type": "tv"}]}, 46195, "tv"
+    ) is True
+
+
 def test_duplicate_or_exists_detection_contract():
     by_code = m.PMDBSubmitResult(
         success=False,

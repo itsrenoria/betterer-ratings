@@ -64,6 +64,26 @@ async def fetch_existing_mappings(
     ))
 
 
+async def fetch_mapping_owners(
+    client: Any,
+    *,
+    id_type: str,
+    id_value: str,
+    media_type: str,
+) -> APIResponse:
+    return cast(APIResponse, await client.http.request_json(
+        method="GET",
+        url=f"{client.base_url}/api/external/mappings/lookup",
+        headers=client._auth_headers(),
+        params={
+            "id_type": id_type,
+            "id_value": id_value,
+            "media_type": media_type,
+        },
+        gate=client.api_gate,
+    ))
+
+
 async def confirm_rating_exists(
     client: Any,
     *,
