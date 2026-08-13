@@ -87,13 +87,7 @@ def observe_submission_response(
     error_code = client._extract_error_code(response.data, response.text or "")
     error_suffix = f" code={error_code}" if error_code else ""
 
-    content_type = response.headers.get("content-type", "").lower()
-    response_text = (response.text or "").lower()
-    is_cloudflare_challenge = response.status == 403 and (
-        "text/html" in content_type
-        or "just a moment" in response_text
-        or "cf-ray" in response.headers
-    )
+    is_cloudflare_challenge = client._is_cloudflare_challenge(response)
 
     if is_cloudflare_challenge:
         retry_after = 300

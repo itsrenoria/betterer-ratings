@@ -142,6 +142,56 @@ def test_mapping_lookup_owned_by_matches_tmdb_id_and_media_type_case_insensitive
     assert m.PMDBClient._mapping_lookup_owned_by(payload, 999999, "tv") is False
 
 
+def test_ownership_denial_403_with_cf_ray_is_not_a_cloudflare_challenge():
+    # Exact production body from the "you can only delete your own data"
+    # 403s -- Cloudflare adds cf-ray to virtually every proxied response,
+    # so its presence alone must not be treated as a challenge signal.
+    response = _response(
+        status=403,
+        headers={"content-type": "application/json", "cf-ray": "8f1a2b3c4d5e6f7g-SJC"},
+        data={"error": "Access denied - you can only delete your own data"},
+        text='{"error":"Access denied - you can only delete your own data"}',
+    )
+    assert m.PMDBClient._is_cloudflare_challenge(response) is False
+
+
+def test_html_403_is_a_cloudflare_challenge():
+    response = _response(
+        status=403,
+        headers={"content-type": "text/html; charset=UTF-8"},
+        text="<html><body>Attention Required!</body></html>",
+    )
+    assert m.PMDBClient._is_cloudflare_challenge(response) is True
+
+
+def test_just_a_moment_body_is_a_cloudflare_challenge():
+    response = _response(
+        status=403,
+        headers={"content-type": "application/json"},
+        text="Just a moment...",
+    )
+    assert m.PMDBClient._is_cloudflare_challenge(response) is True
+
+
+def test_json_403_with_cf_ray_and_no_challenge_markers_is_not_a_challenge():
+    response = _response(
+        status=403,
+        headers={"content-type": "application/json", "cf-ray": "abc123-SJC"},
+        data={"error": "forbidden"},
+        text='{"error":"forbidden"}',
+    )
+    assert m.PMDBClient._is_cloudflare_challenge(response) is False
+
+
+def test_non_403_status_is_never_a_cloudflare_challenge():
+    response = _response(
+        status=401,
+        headers={"content-type": "text/html", "cf-ray": "abc123-SJC"},
+        text="Just a moment...",
+    )
+    assert m.PMDBClient._is_cloudflare_challenge(response) is False
+
+
 def test_mapping_lookup_owned_by_ignores_malformed_entries_and_payloads():
     assert m.PMDBClient._mapping_lookup_owned_by({"results": []}, 1, "movie") is False
     assert m.PMDBClient._mapping_lookup_owned_by({"total": 0}, 1, "movie") is False

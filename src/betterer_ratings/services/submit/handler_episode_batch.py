@@ -17,6 +17,7 @@ async def submit_episode_ratings_batch(
     parse_retry_after_fn: Callable[[Optional[str], int], int],
     pmdb_submit_result_cls: Any,
     extract_error_code_fn: Callable[[Any, str], str],
+    is_cloudflare_challenge_fn: Callable[[Any], bool],
     logger: Any,
 ) -> None:
     if not rows:
@@ -202,13 +203,7 @@ async def submit_episode_ratings_batch(
         return
 
     status_code = int(response.status or 0)
-    content_type = response.headers.get("content-type", "").lower()
-    response_text = (response.text or "").lower()
-    cloudflare_challenge = status_code == 403 and (
-        "text/html" in content_type
-        or "just a moment" in response_text
-        or "cf-ray" in response.headers
-    )
+    cloudflare_challenge = is_cloudflare_challenge_fn(response)
     retryable = status_code in {0, 401, 429, 500, 502, 503, 504, 207} or cloudflare_challenge
     error_code = extract_error_code_fn(response.data, response.text or "")
     base_retry_after = (

@@ -8,6 +8,18 @@ from betterer_ratings.core.scoring import score_to_tenths
 from betterer_ratings.domain.models import APIResponse, PMDBDeleteResult, PMDBSubmitResult
 
 
+def is_cloudflare_challenge(response: APIResponse) -> bool:
+    # A `cf-ray` header is present on virtually every Cloudflare-proxied
+    # response -- including ordinary, legitimate JSON error responses -- so
+    # it is not treated as a challenge signal here. Only markers specific to
+    # an actual interstitial/challenge page are used.
+    if response.status != 403:
+        return False
+    content_type = response.headers.get("content-type", "").lower()
+    response_text = (response.text or "").lower()
+    return "text/html" in content_type or "just a moment" in response_text
+
+
 def extract_item_id(payload: Any) -> Optional[str]:
     if isinstance(payload, dict):
         item = payload.get("item")
