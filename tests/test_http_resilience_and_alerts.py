@@ -101,19 +101,78 @@ def _summary(ratings=10, mappings=10, episodes=0):
     }
 
 
+def _due_counts(**overrides):
+    counts = {
+        "ratings_due": 1,
+        "mappings_due": 1,
+        "episode_ratings_due": 0,
+    }
+    counts.update(overrides)
+    return counts
+
+
 def test_queue_alerts_only_after_sustained_stall_and_recovers_on_progress():
     monitor = QueueAlertMonitor(stall_threshold_seconds=300, stall_repeat_seconds=900)
 
-    assert monitor.observe(now_ts=1000, counts=_counts(), summary=_summary()) == []
-    assert monitor.observe(now_ts=1299, counts=_counts(), summary=_summary()) == []
+    assert monitor.observe(
+        now_ts=1000,
+        counts=_counts(),
+        due_counts=_due_counts(),
+        summary=_summary(),
+    ) == []
+    assert monitor.observe(
+        now_ts=1299,
+        counts=_counts(),
+        due_counts=_due_counts(),
+        summary=_summary(),
+    ) == []
 
-    stalled = monitor.observe(now_ts=1300, counts=_counts(), summary=_summary())
+    stalled = monitor.observe(
+        now_ts=1300,
+        counts=_counts(),
+        due_counts=_due_counts(),
+        summary=_summary(),
+    )
     assert [event["event"] for event in stalled] == ["queue.alert.stalled"]
     assert stalled[0]["stalled_seconds"] == 300
 
-    assert monitor.observe(now_ts=1400, counts=_counts(), summary=_summary()) == []
-    recovered = monitor.observe(now_ts=1401, counts=_counts(), summary=_summary(ratings=11))
+    assert monitor.observe(
+        now_ts=1400,
+        counts=_counts(),
+        due_counts=_due_counts(),
+        summary=_summary(),
+    ) == []
+    recovered = monitor.observe(
+        now_ts=1401,
+        counts=_counts(),
+        due_counts=_due_counts(),
+        summary=_summary(ratings=11),
+    )
     assert [event["event"] for event in recovered] == ["queue.alert.recovered"]
+
+
+def test_queue_alerts_ignore_retries_that_are_not_due():
+    monitor = QueueAlertMonitor(stall_threshold_seconds=300, stall_repeat_seconds=900)
+    future_only_counts = _counts(
+        ratings_pending=1,
+        ratings_in_flight=0,
+        mappings_pending=0,
+        mappings_in_flight=0,
+    )
+    nothing_due = _due_counts(ratings_due=0, mappings_due=0, episode_ratings_due=0)
+
+    assert monitor.observe(
+        now_ts=1000,
+        counts=future_only_counts,
+        due_counts=nothing_due,
+        summary=_summary(),
+    ) == []
+    assert monitor.observe(
+        now_ts=1300,
+        counts=future_only_counts,
+        due_counts=nothing_due,
+        summary=_summary(),
+    ) == []
 
 
 def test_queue_alerts_immediately_when_failed_rows_are_nonzero():
@@ -122,6 +181,7 @@ def test_queue_alerts_immediately_when_failed_rows_are_nonzero():
     events = monitor.observe(
         now_ts=1000,
         counts=_counts(ratings_failed=2, mappings_failed=1),
+        due_counts=_due_counts(),
         summary=_summary(),
     )
 

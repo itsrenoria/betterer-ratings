@@ -104,4 +104,5 @@ def test_mapping_group_preflight_resolves_existing_and_posts_only_missing():
     )
 
     assert {item[2] for item in db.submitted} == {"imdb", "tvdb"}
+    assert {item[4] for item in db.submitted} == {None}
     assert posted == ["trakt"]

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Sequence
 
-
 QUEUE_KINDS = ("mapping", "rating", "episode_ratings")
 
 

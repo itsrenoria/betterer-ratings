@@ -6,7 +6,6 @@ from typing import Any, Mapping
 
 from betterer_ratings.core.clock import now_epoch
 
-
 QUEUE_STALL_ALERT_SECONDS = 300
 QUEUE_STALL_REPEAT_SECONDS = 900
 QUEUE_FAILED_REPEAT_SECONDS = 3600
@@ -30,6 +29,7 @@ class QueueAlertMonitor:
         *,
         now_ts: int,
         counts: Mapping[str, int],
+        due_counts: Mapping[str, int],
         summary: Mapping[str, int | str],
     ) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
@@ -88,7 +88,7 @@ class QueueAlertMonitor:
             self.last_failed_alert_at = 0
         self.last_failed_counts = failed_counts
 
-        if not _queue_has_active_work(counts):
+        if not _queue_has_active_work(counts, due_counts):
             self.last_progress_at = int(now_ts)
             self.stall_alert_active = False
             self.last_stall_alert_at = 0
@@ -171,16 +171,23 @@ def _submission_snapshot(summary: Mapping[str, int | str]) -> tuple[int | str, .
     )
 
 
-def _queue_has_active_work(counts: Mapping[str, int]) -> bool:
+def _queue_has_active_work(
+    counts: Mapping[str, int],
+    due_counts: Mapping[str, int],
+) -> bool:
     return any(
         int(counts[key]) > 0
         for key in (
-            "ratings_pending",
             "ratings_in_flight",
-            "mappings_pending",
             "mappings_in_flight",
-            "episode_ratings_pending",
             "episode_ratings_in_flight",
+        )
+    ) or any(
+        int(due_counts[key]) > 0
+        for key in (
+            "ratings_due",
+            "mappings_due",
+            "episode_ratings_due",
         )
     )
 
@@ -201,8 +208,16 @@ async def queue_progress_loop(
     while not stop_event.is_set():
         now_ts = int(now_epoch_fn())
         counts = db.queue_counts()
+        due_counts = {
+            "ratings_due": db.count_due_queue(kind="rating", now_ts=now_ts),
+            "mappings_due": db.count_due_queue(kind="mapping", now_ts=now_ts),
+            "episode_ratings_due": db.count_due_queue(
+                kind="episode_ratings",
+                now_ts=now_ts,
+            ),
+        }
         snapshot = _queue_snapshot(counts)
-        has_active_work = _queue_has_active_work(counts)
+        has_active_work = _queue_has_active_work(counts, due_counts)
         if snapshot != last_snapshot or has_active_work:
             logger.info(
                 "[Submitter] Queue status: %s.",
@@ -211,7 +226,12 @@ async def queue_progress_loop(
             )
             last_snapshot = snapshot
         summary = db.submission_summary(now_ts)
-        for alert in monitor.observe(now_ts=now_ts, counts=counts, summary=summary):
+        for alert in monitor.observe(
+            now_ts=now_ts,
+            counts=counts,
+            due_counts=due_counts,
+            summary=summary,
+        ):
             event = str(alert["event"])
             if event == "queue.alert.failed":
                 logger.warning(
