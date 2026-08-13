@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from betterer_ratings.core.parsing import first_non_empty
+from betterer_ratings.core.parsing import first_non_empty, parse_int
 from betterer_ratings.core.retry import parse_retry_after
 from betterer_ratings.core.scoring import score_to_tenths
 from betterer_ratings.domain.models import APIResponse, PMDBDeleteResult, PMDBSubmitResult
@@ -260,15 +260,14 @@ def mapping_lookup_owned_by(payload: Any, tmdb_id: int, media_type: str) -> bool
     for entry in results:
         if not isinstance(entry, dict):
             continue
-        raw_tmdb_id = entry.get("tmdb_id")
-        if raw_tmdb_id is None:
-            continue
-        try:
-            entry_tmdb_id = int(raw_tmdb_id)
-        except (TypeError, ValueError):
+        # parse_int rejects bools (str(True) == "True", not "1") and
+        # fractional values (str(46195.5) can't be parsed by int()), so
+        # neither can falsely coerce into matching an integer tmdb_id.
+        entry_tmdb_id = parse_int(entry.get("tmdb_id"))
+        if entry_tmdb_id is None:
             continue
         entry_media_type = str(entry.get("media_type", "")).strip().lower()
-        if entry_tmdb_id == int(tmdb_id) and entry_media_type == wanted_media_type:
+        if entry_tmdb_id == tmdb_id and entry_media_type == wanted_media_type:
             return True
     return False
 

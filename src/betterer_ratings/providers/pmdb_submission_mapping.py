@@ -71,6 +71,22 @@ async def resolve_mapping_duplicate_or_conflict(
             endpoint="/api/external/mappings/lookup",
         )
 
+    if lookup.status != 200:
+        # Any other lookup failure (400/404/422/etc.) is a lookup-level
+        # error, not evidence one way or the other about ownership -- it
+        # must not be silently converted into duplicate_unresolved.
+        return PMDBSubmitResult(
+            success=False,
+            retryable=False,
+            retry_after_seconds=0,
+            duplicate_or_exists=False,
+            error_text=lookup.text or "PMDB mapping ownership lookup failed",
+            item_id=None,
+            status_code=lookup.status,
+            error_code=client._extract_error_code(lookup.data, lookup.text),
+            endpoint="/api/external/mappings/lookup",
+        )
+
     if client._mapping_lookup_owned_by(lookup.data, tmdb_id, media_type):
         return PMDBSubmitResult(
             success=True,

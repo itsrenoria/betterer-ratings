@@ -154,6 +154,33 @@ def test_mapping_lookup_owned_by_ignores_malformed_entries_and_payloads():
     ) is True
 
 
+def test_mapping_lookup_owned_by_strict_tmdb_id_coercion():
+    # int entry vs int target
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": 46195, "media_type": "tv"}]}, 46195, "tv"
+    ) is True
+    # string entry vs int target, and the reverse framing of the same case
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": "46195", "media_type": "tv"}]}, 46195, "tv"
+    ) is True
+    # fractional numeric values must not match an integer tmdb_id
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": 46195.5, "media_type": "tv"}]}, 46195, "tv"
+    ) is False
+    # bool is a subclass of int in Python -- True/1 and False/0 must not
+    # be treated as equivalent tmdb_ids
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": True, "media_type": "tv"}]}, 1, "tv"
+    ) is False
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": False, "media_type": "tv"}]}, 0, "tv"
+    ) is False
+    # malformed/non-numeric values must not match
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": "not-a-number", "media_type": "tv"}]}, 46195, "tv"
+    ) is False
+
+
 def test_duplicate_or_exists_detection_contract():
     by_code = m.PMDBSubmitResult(
         success=False,

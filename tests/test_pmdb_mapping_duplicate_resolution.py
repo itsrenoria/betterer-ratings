@@ -168,3 +168,28 @@ def test_unauthorized_lookup_is_retryable_forbidden_is_not():
     )
     assert forbidden.retryable is False
     assert forbidden.success is False
+
+
+def test_lookup_400_404_422_are_not_converted_into_duplicate_unresolved():
+    # A lookup-level error is not evidence about ownership either way --
+    # it must surface as its own failure, distinct from the "lookup
+    # succeeded but found no owners" duplicate_unresolved fallback.
+    for status in (400, 404, 422):
+        response = _response(
+            status=status,
+            data={"error": f"lookup failed with {status}"},
+            text=f'{{"error":"lookup failed with {status}"}}',
+        )
+        _client, result = _resolve(
+            response,
+            tmdb_id=46195,
+            media_type="tv",
+            id_type="tvdb",
+            id_value="102261",
+        )
+        assert result.success is False
+        assert result.retryable is False
+        assert result.status_code == status
+        assert result.error_code != "duplicate_unresolved"
+        assert result.error_code == f"lookup failed with {status}"
+        assert result.endpoint == "/api/external/mappings/lookup"
