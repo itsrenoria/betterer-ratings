@@ -215,6 +215,8 @@ async def submit_rating(
             score=score,
             known_item_id=existing_pmdb_item_id,
         )
+        if stale_cached_item_id:
+            resolved = replace(resolved, stale_cached_item_id=True)
         return cast(PMDBSubmitResult, resolved)
     if stale_cached_item_id:
         result = replace(result, stale_cached_item_id=True)
