@@ -1,21 +1,50 @@
 from __future__ import annotations
 
-import sqlite3
-from pathlib import Path
+from tests import support as m
 
 
-def test_copied_data_uses_betterer_ratings_database_name():
-    repo_root = Path(__file__).resolve().parents[2]
-    db_path = repo_root / "data" / "db" / "betterer_ratings.sqlite3"
-    old_db_path = repo_root / "data" / "db" / "mdblist_pmdb.sqlite3"
+def test_configured_database_filename_is_betterer_ratings_not_legacy_mdblist_pmdb():
+    db_filename = m.constants.CONTAINER_DATABASE_PATH.rsplit("/", 1)[-1]
+    assert db_filename == "betterer_ratings.sqlite3"
+    assert db_filename != "mdblist_pmdb.sqlite3"
 
-    assert db_path.exists()
-    assert not old_db_path.exists()
 
-    conn = sqlite3.connect(db_path)
+def test_local_database_at_betterer_ratings_filename_initializes_and_stores_data(tmp_path):
+    db_filename = m.constants.CONTAINER_DATABASE_PATH.rsplit("/", 1)[-1]
+    db = m.LocalDatabase(tmp_path / db_filename)
     try:
+        db.save_enriched_item(
+            tmdb_id=1,
+            media_type="movie",
+            title="Title 1",
+            imdb_id="tt1000000",
+            popularity=1.0,
+            tmdb_vote_average=70.0,
+            enrichment_error=None,
+            ratings={"IM": 70.0},
+            mappings={"tvdb": "1"},
+            now_ts=100,
+        )
+        db.save_imdb_episode_ratings(
+            tmdb_id=2,
+            media_type="tv",
+            imdb_parent_id="tt2000000",
+            entries=[
+                m.IMDbEpisodeArchiveCandidate(
+                    parent_imdb_id="tt2000000",
+                    episode_imdb_id="tt2000001",
+                    season=1,
+                    episode=1,
+                    score=80.0,
+                    votes=100,
+                )
+            ],
+            now_ts=100,
+        )
+        db.set_state("last_harvest_cycle_at", 100)
+
         for table in ("titles", "ratings", "mappings", "episode_ratings", "state"):
-            count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            count = db.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             assert count > 0
     finally:
-        conn.close()
+        db.close()
