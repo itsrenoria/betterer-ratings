@@ -34,6 +34,12 @@ async def submit_rating(
         existing_pmdb_item_id=pmdb_item_id,
     )
 
+    if result.stale_cached_item_id and pmdb_item_id:
+        # PMDB confirmed our cached id belongs to another account; stop
+        # trusting it so future cycles don't try to delete it again.
+        db.clear_rating_pmdb_item_id(tmdb_id, media_type, label)
+        pmdb_item_id = None
+
     if result.success:
         db.mark_rating_submitted(
             tmdb_id,
@@ -78,7 +84,11 @@ async def submit_rating(
 
     if result.retryable:
         if int(result.status_code or 0) in verify_after_transient_statuses:
-            found_existing, found_item_id = await pmdb_client.confirm_rating_exists(
+            # `confirm_rating_exists` matches by label+score against an
+            # unauthenticated lookup, so a hit is not proof the entry is
+            # ours to delete later — only cache ids that came back from our
+            # own create response, never from this confirmation match.
+            found_existing, _found_item_id = await pmdb_client.confirm_rating_exists(
                 tmdb_id=tmdb_id,
                 media_type=media_type,
                 label=label,
@@ -90,7 +100,7 @@ async def submit_rating(
                     media_type,
                     label,
                     now_epoch_fn(),
-                    pmdb_item_id=found_item_id or pmdb_item_id,
+                    pmdb_item_id=pmdb_item_id,
                 )
                 logger.info(
                     "[Submitter] Rating confirmed remote after transient failure: %s %s %s=%.1f",

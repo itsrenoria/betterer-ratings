@@ -142,7 +142,11 @@ async def submit_mapping(
 
     if result.retryable:
         if int(result.status_code or 0) in verify_after_transient_statuses:
-            found_existing, found_item_id = await pmdb_client.confirm_mapping_exists(
+            # `confirm_mapping_exists` matches by id_type+id_value against an
+            # unauthenticated lookup, so a hit is not proof the entry is
+            # ours — only cache ids that came back from our own create
+            # response, never from this confirmation match.
+            found_existing, _found_item_id = await pmdb_client.confirm_mapping_exists(
                 tmdb_id=tmdb_id,
                 media_type=media_type,
                 id_type=id_type,
@@ -154,7 +158,7 @@ async def submit_mapping(
                     media_type,
                     id_type,
                     now_epoch_fn(),
-                    pmdb_item_id=found_item_id or pmdb_item_id,
+                    pmdb_item_id=pmdb_item_id,
                 )
                 logger.info(
                     "[Submitter] Mapping confirmed remote after transient failure: %s %s %s=%s",

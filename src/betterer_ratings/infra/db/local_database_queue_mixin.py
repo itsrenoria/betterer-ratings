@@ -21,6 +21,7 @@ from betterer_ratings.infra.db.queue_recovery import (
     recover_stale_in_flight_rows,
 )
 from betterer_ratings.infra.db.queue_retry import (
+    clear_rating_pmdb_item_id,
     mark_episode_rating_failed,
     mark_episode_rating_retry,
     mark_mapping_failed,
@@ -186,6 +187,19 @@ class LocalDatabaseQueueMixin:
             label=label,
             retry_after=retry_after,
             error_text=error_text,
+        )
+
+    def clear_rating_pmdb_item_id(
+        self,
+        tmdb_id: int,
+        media_type: str,
+        label: str,
+    ) -> None:
+        clear_rating_pmdb_item_id(
+            self.conn,
+            tmdb_id=tmdb_id,
+            media_type=media_type,
+            label=label,
         )
 
     def mark_mapping_retry(

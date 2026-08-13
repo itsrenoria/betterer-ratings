@@ -84,6 +84,7 @@ class PMDBSubmitResult:
     status_code: int = 0
     error_code: str = ""
     endpoint: str = ""
+    stale_cached_item_id: bool = False
 
 
 @dataclass

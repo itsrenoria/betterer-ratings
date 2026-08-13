@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, List, Optional, cast
 
 from betterer_ratings.core.retry import parse_retry_after
@@ -167,22 +168,28 @@ async def submit_rating(
     score: float,
     existing_pmdb_item_id: Optional[str] = None,
 ) -> PMDBSubmitResult:
+    stale_cached_item_id = False
     if existing_pmdb_item_id:
         delete_result = await client._delete_rating_by_id(existing_pmdb_item_id)
-        if not delete_result.success and not _is_not_owned_delete_failure(delete_result):
-            return PMDBSubmitResult(
-                success=False,
-                retryable=delete_result.retryable,
-                retry_after_seconds=delete_result.retry_after_seconds
-                if delete_result.retryable
-                else 0,
-                duplicate_or_exists=False,
-                error_text=delete_result.error_text,
-                item_id=None,
-                status_code=delete_result.status_code,
-                error_code=delete_result.error_code,
-                endpoint=delete_result.endpoint or "/api/external/ratings",
-            )
+        if not delete_result.success:
+            if not _is_not_owned_delete_failure(delete_result):
+                return PMDBSubmitResult(
+                    success=False,
+                    retryable=delete_result.retryable,
+                    retry_after_seconds=delete_result.retry_after_seconds
+                    if delete_result.retryable
+                    else 0,
+                    duplicate_or_exists=False,
+                    error_text=delete_result.error_text,
+                    item_id=None,
+                    status_code=delete_result.status_code,
+                    error_code=delete_result.error_code,
+                    endpoint=delete_result.endpoint or "/api/external/ratings",
+                )
+            # PMDB confirmed the cached id belongs to another account; the
+            # caller should stop treating it as ours regardless of how this
+            # submission ultimately resolves.
+            stale_cached_item_id = True
 
     response = await client._post_with_gates(
         url=f"{client.base_url}/api/external/ratings",
@@ -208,5 +215,9 @@ async def submit_rating(
             score=score,
             known_item_id=existing_pmdb_item_id,
         )
+        if stale_cached_item_id:
+            resolved = replace(resolved, stale_cached_item_id=True)
         return cast(PMDBSubmitResult, resolved)
+    if stale_cached_item_id:
+        result = replace(result, stale_cached_item_id=True)
     return cast(PMDBSubmitResult, result)
