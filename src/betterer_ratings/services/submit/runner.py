@@ -6,7 +6,6 @@ from typing import Any, Mapping
 
 from betterer_ratings.core.clock import now_epoch
 
-
 QUEUE_STALL_ALERT_SECONDS = 300
 QUEUE_STALL_REPEAT_SECONDS = 900
 QUEUE_FAILED_REPEAT_SECONDS = 3600

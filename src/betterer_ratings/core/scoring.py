@@ -263,7 +263,9 @@ def parse_mdblist_ratings(mdblist_data: Optional[Dict[str, Any]]) -> Dict[str, f
     if "TR" not in ratings:
         trakt_fallback = mdblist_data.get("score")
         tr_num, tr_den = parse_value_and_scale(trakt_fallback)
-        if tr_den is not None:
+        if tr_num is None:
+            tr_score = None
+        elif tr_den is not None:
             tr_score = scale_to_100(tr_num, tr_den)
         else:
             tr_score = clamp_0_100(tr_num)
