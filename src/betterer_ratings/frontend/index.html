@@ -217,6 +217,11 @@ a{color:inherit;text-decoration:none}
 .pill-tv{background:var(--violet-dim);color:var(--violet)}
 .pill-active{background:var(--emerald-dim);color:var(--emerald)}
 .pill-paused{background:var(--red-dim);color:var(--red)}
+.pill-debug{background:var(--blue-dim);color:var(--blue)}
+.pill-info{background:var(--emerald-dim);color:var(--emerald)}
+.pill-warning{background:var(--amber-dim);color:var(--amber)}
+.pill-error{background:var(--red-dim);color:var(--red)}
+.pill-critical{background:var(--red-dim);color:var(--red);font-weight:800}
 
 /* ─── PROGRESS BAR ─── */
 .stacked-bar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:rgba(255,255,255,.04);margin:12px 0 8px}
@@ -313,6 +318,27 @@ a{color:inherit;text-decoration:none}
 
 /* ─── ACTIVITY ─── */
 .activity-grid{display:grid;grid-template-columns:1fr;gap:16px}
+
+/* ─── LOGS ─── */
+.log-toolbar{display:flex;align-items:center;gap:10px}
+.log-select{
+  background:var(--card);border:1px solid var(--border);color:var(--text);
+  border-radius:var(--radius-sm);padding:4px 8px;font-size:.7rem;font-family:var(--font-body);
+}
+.log-clear-btn{
+  background:none;border:1px solid var(--border);color:var(--text-secondary);
+  border-radius:var(--radius-sm);padding:4px 10px;font-size:.7rem;cursor:pointer;
+  transition:color .15s,border-color .15s;
+}
+.log-clear-btn:hover{color:var(--text);border-color:#2b333f}
+.log-list{max-height:560px;overflow-y:auto;font-family:var(--font-mono);font-size:.72rem}
+.log-row{display:flex;align-items:flex-start;gap:10px;padding:6px 10px;border-bottom:1px solid var(--border-subtle)}
+.log-row:hover{background:rgba(255,255,255,.02)}
+.log-time{color:var(--text-muted);white-space:nowrap;flex-shrink:0;width:70px}
+.log-component{color:var(--text-secondary);white-space:nowrap;flex-shrink:0;min-width:76px}
+.log-message{color:var(--text);flex:1;min-width:0;word-break:break-word;line-height:1.5}
+.log-context{color:var(--text-secondary);margin-left:6px}
+.log-exception{white-space:pre-wrap;color:var(--red);font-size:.68rem;margin-top:4px}
 </style>
 </head>
 <body>
@@ -338,6 +364,7 @@ a{color:inherit;text-decoration:none}
   <button class="tab-btn" data-tab="queue">Queue</button>
   <button class="tab-btn" data-tab="providers">Providers</button>
   <button class="tab-btn" data-tab="activity">Activity</button>
+  <button class="tab-btn" data-tab="logs">Logs</button>
 </div>
 
 <!-- ═══ MAIN ═══ -->
@@ -408,6 +435,30 @@ a{color:inherit;text-decoration:none}
     </div>
   </div>
 
+  <!-- ── TAB: LOGS ── -->
+  <div class="tab-panel" id="tab-logs">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Application Logs</span>
+        <div class="log-toolbar">
+          <span class="panel-badge" id="log-count"></span>
+          <select class="log-select" id="log-level-filter">
+            <option value="ALL">ALL</option>
+            <option value="DEBUG">DEBUG</option>
+            <option value="INFO">INFO</option>
+            <option value="WARNING">WARNING</option>
+            <option value="ERROR">ERROR</option>
+            <option value="CRITICAL">CRITICAL</option>
+          </select>
+          <button class="log-clear-btn" id="log-clear-btn" type="button">Clear</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="log-list" id="log-list"></div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -466,6 +517,15 @@ document.querySelectorAll('.tab-btn').forEach(btn=>{
 // ─── State ───
 let state = {};
 let matrixPreviousTotals = null;
+let logLevelFilter = 'ALL';
+let logsClearedAtEpoch = 0;
+let logsNewestVisibleTimestamp = 0;
+
+function logsURL() {
+  return logLevelFilter && logLevelFilter !== 'ALL'
+    ? `/api/logs?level=${encodeURIComponent(logLevelFilter)}`
+    : '/api/logs';
+}
 
 const MATRIX_LAYOUT = [
   'tmdb','tmdb','mdblist','pmdbApi','pmdbApi',
@@ -488,7 +548,7 @@ async function fetchJSON(url) {
 }
 
 async function loadAll() {
-  const [stats,services,titlesSummary,ratingsSummary,mappingsSummary,episodesSummary,metricsHistory,titlesRecent,titlesDaily] = await Promise.all([
+  const [stats,services,titlesSummary,ratingsSummary,mappingsSummary,episodesSummary,metricsHistory,titlesRecent,titlesDaily,logs] = await Promise.all([
     fetchJSON('/api/stats'),
     fetchJSON('/api/services'),
     fetchJSON('/api/titles/summary'),
@@ -498,8 +558,9 @@ async function loadAll() {
     fetchJSON('/api/metrics/history'),
     fetchJSON('/api/titles/recent'),
     fetchJSON('/api/titles/daily'),
+    fetchJSON(logsURL()),
   ]);
-  state = {stats,services,titlesSummary,ratingsSummary,mappingsSummary,episodesSummary,metricsHistory,titlesRecent,titlesDaily};
+  state = {stats,services,titlesSummary,ratingsSummary,mappingsSummary,episodesSummary,metricsHistory,titlesRecent,titlesDaily,logs};
   render();
   document.getElementById('nav-last-update').textContent = 'Updated '+new Date().toLocaleTimeString();
 }
@@ -517,6 +578,7 @@ function render() {
   renderProviderSummary();
   renderProviders();
   renderRecent();
+  renderLogs();
 }
 
 function renderActivityMatrix() {
@@ -936,6 +998,53 @@ function renderRecent() {
     </tr>`;
   }).join('');
 }
+
+// ── Logs ──
+const LOG_LEVEL_PILL = {DEBUG:'pill-debug',INFO:'pill-info',WARNING:'pill-warning',ERROR:'pill-error',CRITICAL:'pill-critical'};
+const LOG_CONTEXT_SKIP_KEYS = new Set(['level','logger','message','component','event','provider','exception','timestamp']);
+
+function renderLogs() {
+  const list = document.getElementById('log-list');
+  if (!list) return;
+
+  const all = state.logs?.logs || [];
+  const rows = all.filter(l => Number(l.timestamp||0) > logsClearedAtEpoch);
+  logsNewestVisibleTimestamp = rows.reduce((max, l) => Math.max(max, Number(l.timestamp||0)), logsClearedAtEpoch);
+  document.getElementById('log-count').textContent = rows.length+' entries';
+
+  if (rows.length === 0) {
+    list.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:.8rem">No logs yet</div>';
+    return;
+  }
+
+  list.innerHTML = rows.map(l => {
+    const level = String(l.level||'INFO').toUpperCase();
+    const pillClass = LOG_LEVEL_PILL[level] || 'pill-info';
+    const ms = epochMillis(l.timestamp);
+    const time = ms == null ? '—' : new Date(ms).toLocaleTimeString();
+    const component = l.component || l.logger || '';
+    const context = Object.keys(l)
+      .filter(k => !LOG_CONTEXT_SKIP_KEYS.has(k))
+      .map(k => `${k}=${typeof l[k]==='object' && l[k]!==null ? JSON.stringify(l[k]) : l[k]}`)
+      .join(' ');
+    const exception = l.exception ? `<div class="log-exception">${esc(l.exception)}</div>` : '';
+    return `<div class="log-row">
+      <span class="log-time">${esc(time)}</span>
+      <span class="pill ${pillClass}">${esc(level)}</span>
+      <span class="log-component">${esc(component)}</span>
+      <span class="log-message">${esc(l.message||'')}${context?`<span class="log-context">${esc(context)}</span>`:''}${exception}</span>
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('log-level-filter')?.addEventListener('change', e => {
+  logLevelFilter = e.target.value;
+  loadAll();
+});
+document.getElementById('log-clear-btn')?.addEventListener('click', () => {
+  logsClearedAtEpoch = logsNewestVisibleTimestamp;
+  renderLogs();
+});
 
 // ─── Init & Refresh ───
 loadAll();

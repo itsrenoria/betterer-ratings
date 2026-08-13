@@ -28,6 +28,11 @@ def test_dashboard_serves_only_meridian_frontend() -> None:
     assert not (api_server.FRONTEND_DIR / "v2.html").exists()
     assert not (api_server.FRONTEND_DIR / "v3.html").exists()
 
+    assert any(
+        route.method == "GET" and getattr(route.resource, "canonical", None) == "/api/logs"
+        for route in app.router.routes()
+    )
+
 
 def test_meridian_header_and_tables_match_single_dashboard_copy() -> None:
     html = _dashboard_html()
@@ -94,6 +99,26 @@ def test_overview_cards_use_quiet_metric_hierarchy() -> None:
     assert "stat-card.failed" not in html
     assert ".stat-card .stat-value{font-family:var(--font-mono);font-size:1.42rem" in html
     assert ".stat-card .stat-total{font-family:var(--font-mono);font-size:.72rem" in html
+
+
+def test_logs_tab_provides_level_filter_and_client_side_clear() -> None:
+    html = _dashboard_html()
+
+    assert 'data-tab="logs"' in html
+    assert 'id="tab-logs"' in html
+    assert 'id="log-level-filter"' in html
+    assert 'id="log-clear-btn"' in html
+    assert 'id="log-list"' in html
+    assert "function renderLogs()" in html
+    assert "/api/logs" in html
+    assert "logsClearedAtEpoch = logsNewestVisibleTimestamp" in html
+
+    clear_handler_start = html.index("log-clear-btn')?.addEventListener")
+    clear_handler_end = html.index("});", clear_handler_start)
+    clear_handler_body = html[clear_handler_start:clear_handler_end]
+    assert "loadAll()" not in clear_handler_body
+    assert "fetchJSON" not in clear_handler_body
+    assert "Date.now()" not in clear_handler_body
 
 
 def test_services_api_hides_expired_pause_reason() -> None:

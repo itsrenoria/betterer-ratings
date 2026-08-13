@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from aiohttp import web
 
 from betterer_ratings.core.clock import now_epoch
+from betterer_ratings.observability import log_buffer
 
 LOGGER = logging.getLogger("betterer-ratings.api")
 
@@ -253,6 +254,12 @@ async def handle_recent_titles(request: web.Request) -> web.Response:
     return _json_response({"titles": titles})
 
 
+async def handle_logs(request: web.Request) -> web.Response:
+    buffer: log_buffer.LogBufferHandler = request.app["log_buffer"]
+    level = request.query.get("level")
+    return _json_response({"logs": buffer.snapshot(level=level)})
+
+
 async def handle_submitted_titles_daily(request: web.Request) -> web.Response:
     db = request.app["db"]
     conn = db.conn
@@ -271,6 +278,7 @@ async def handle_submitted_titles_daily(request: web.Request) -> web.Response:
 def create_app(db: Any) -> web.Application:
     app = web.Application()
     app["db"] = db
+    app["log_buffer"] = log_buffer.attach_once()
 
     app.router.add_get("/api/stats", handle_stats)
     app.router.add_get("/api/services", handle_services)
@@ -281,6 +289,7 @@ def create_app(db: Any) -> web.Application:
     app.router.add_get("/api/metrics/history", handle_metrics_history)
     app.router.add_get("/api/titles/recent", handle_recent_titles)
     app.router.add_get("/api/titles/daily", handle_submitted_titles_daily)
+    app.router.add_get("/api/logs", handle_logs)
 
     if FRONTEND_DIR.is_dir():
         app.router.add_static("/static/", FRONTEND_DIR, show_index=False)
