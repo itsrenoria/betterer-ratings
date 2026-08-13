@@ -24,6 +24,7 @@ logs/
 imdb/
 .DS_Store
 .vscode/
+.worktrees/
 
 # Local docs + reference workspace
 docs/
