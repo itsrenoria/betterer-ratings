@@ -41,12 +41,17 @@ async def submit_rating(
         pmdb_item_id = None
 
     if result.success:
+        submitted_item_id = (
+            None
+            if result.stale_cached_item_id and result.duplicate_or_exists
+            else result.item_id
+        )
         db.mark_rating_submitted(
             tmdb_id,
             media_type,
             label,
             now_epoch_fn(),
-            pmdb_item_id=result.item_id,
+            pmdb_item_id=submitted_item_id,
         )
         if result.duplicate_or_exists:
             logger.info(

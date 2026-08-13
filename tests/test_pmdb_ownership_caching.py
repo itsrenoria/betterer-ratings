@@ -180,6 +180,41 @@ def test_not_owned_delete_clears_stale_cached_id_and_does_not_retry_delete_it():
     assert len(db.retried) == 1
 
 
+def test_stale_duplicate_success_does_not_recache_foreign_rating_id():
+    class FakePMDB:
+        async def submit_rating(self, **kwargs):
+            return PMDBSubmitResult(
+                success=True,
+                retryable=False,
+                retry_after_seconds=0,
+                duplicate_or_exists=True,
+                error_text="",
+                item_id="foreign-rating-id",
+                status_code=200,
+                stale_cached_item_id=True,
+            )
+
+    db = _FakeRatingDB()
+    asyncio.run(
+        handler_rating.submit_rating(
+            row=_row(pmdb_item_id="foreign-rating-id"),
+            pmdb_client=FakePMDB(),
+            db=db,
+            verify_after_transient_statuses=set(),
+            max_retry_attempts=5,
+            format_manual_error_fn=lambda **kwargs: "manual-error",
+            format_pmdb_error_fn=lambda **kwargs: "pmdb-error",
+            retry_delay_seconds_fn=lambda result, attempts: 60,
+            now_epoch_fn=lambda: 1000,
+            first_non_empty_fn=first_non_empty,
+            logger=_NullLogger(),
+        )
+    )
+
+    assert db.cleared == [(42, "movie", "IM")]
+    assert db.submitted == [(42, "movie", "IM", 1000, None)]
+
+
 class _FakeMappingDB:
     def __init__(self):
         self.submitted: list[tuple] = []

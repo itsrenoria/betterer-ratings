@@ -46,7 +46,6 @@ async def submit_mapping_group(
                 media_type,
                 id_type,
                 submitted_at,
-                pmdb_item_id=pmdb_client._extract_entry_id(matching_entry),
             )
             unresolved.remove(row)
             resolved_count += 1
