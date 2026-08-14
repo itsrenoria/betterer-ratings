@@ -2,10 +2,22 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from betterer_ratings.core.parsing import first_non_empty
+from betterer_ratings.core.parsing import first_non_empty, parse_int
 from betterer_ratings.core.retry import parse_retry_after
 from betterer_ratings.core.scoring import score_to_tenths
 from betterer_ratings.domain.models import APIResponse, PMDBDeleteResult, PMDBSubmitResult
+
+
+def is_cloudflare_challenge(response: APIResponse) -> bool:
+    # A `cf-ray` header is present on virtually every Cloudflare-proxied
+    # response -- including ordinary, legitimate JSON error responses -- so
+    # it is not treated as a challenge signal here. Only markers specific to
+    # an actual interstitial/challenge page are used.
+    if response.status != 403:
+        return False
+    content_type = response.headers.get("content-type", "").lower()
+    response_text = (response.text or "").lower()
+    return "text/html" in content_type or "just a moment" in response_text
 
 
 def extract_item_id(payload: Any) -> Optional[str]:
@@ -193,6 +205,23 @@ def to_delete_result(response: APIResponse, endpoint: str = "") -> PMDBDeleteRes
             endpoint=endpoint,
         )
 
+    if response.status == 401:
+        # PMDB's own `validateApiKey` answers 401 when its upstream admin
+        # token is missing or stale, so a 401 here is a transient server-side
+        # condition rather than a rejection of our key -- an unknown rating id
+        # returns 404 and an ownership failure returns 403. Mirror
+        # `to_submit_result` so the delete leg backs off instead of failing
+        # the row permanently.
+        return PMDBDeleteResult(
+            success=False,
+            retryable=True,
+            retry_after_seconds=300,
+            error_text=text,
+            status_code=response.status,
+            error_code=error_code,
+            endpoint=endpoint,
+        )
+
     return PMDBDeleteResult(
         success=False,
         retryable=False,
@@ -247,6 +276,29 @@ def rating_entry_matches_score(entry: Dict[str, Any], score: float) -> bool:
     if existing_tenths is None or target_tenths is None:
         return False
     return existing_tenths == target_tenths
+
+
+def mapping_lookup_owned_by(payload: Any, tmdb_id: int, media_type: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return False
+
+    wanted_media_type = media_type.strip().lower()
+    for entry in results:
+        if not isinstance(entry, dict):
+            continue
+        # parse_int rejects bools (str(True) == "True", not "1") and
+        # fractional values (str(46195.5) can't be parsed by int()), so
+        # neither can falsely coerce into matching an integer tmdb_id.
+        entry_tmdb_id = parse_int(entry.get("tmdb_id"))
+        if entry_tmdb_id is None:
+            continue
+        entry_media_type = str(entry.get("media_type", "")).strip().lower()
+        if entry_tmdb_id == tmdb_id and entry_media_type == wanted_media_type:
+            return True
+    return False
 
 
 def mapping_entry_matches_value(entry: Dict[str, Any], id_value: str) -> bool:

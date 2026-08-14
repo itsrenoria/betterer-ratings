@@ -129,6 +129,108 @@ def test_rating_and_mapping_entry_matchers_use_current_normalization_rules():
     assert m.PMDBClient._mapping_entry_matches_value({"value": "tt123"}, "tt999") is False
 
 
+def test_mapping_lookup_owned_by_matches_tmdb_id_and_media_type_case_insensitively():
+    payload = {
+        "results": [
+            {"tmdb_id": 46195, "media_type": "TV"},
+            {"tmdb_id": 290689, "media_type": "tv"},
+        ],
+        "total": 2,
+    }
+    assert m.PMDBClient._mapping_lookup_owned_by(payload, 46195, "tv") is True
+    assert m.PMDBClient._mapping_lookup_owned_by(payload, 46195, "movie") is False
+    assert m.PMDBClient._mapping_lookup_owned_by(payload, 999999, "tv") is False
+
+
+def test_ownership_denial_403_with_cf_ray_is_not_a_cloudflare_challenge():
+    # Exact production body from the "you can only delete your own data"
+    # 403s -- Cloudflare adds cf-ray to virtually every proxied response,
+    # so its presence alone must not be treated as a challenge signal.
+    response = _response(
+        status=403,
+        headers={"content-type": "application/json", "cf-ray": "8f1a2b3c4d5e6f7g-SJC"},
+        data={"error": "Access denied - you can only delete your own data"},
+        text='{"error":"Access denied - you can only delete your own data"}',
+    )
+    assert m.PMDBClient._is_cloudflare_challenge(response) is False
+
+
+def test_html_403_is_a_cloudflare_challenge():
+    response = _response(
+        status=403,
+        headers={"content-type": "text/html; charset=UTF-8"},
+        text="<html><body>Attention Required!</body></html>",
+    )
+    assert m.PMDBClient._is_cloudflare_challenge(response) is True
+
+
+def test_just_a_moment_body_is_a_cloudflare_challenge():
+    response = _response(
+        status=403,
+        headers={"content-type": "application/json"},
+        text="Just a moment...",
+    )
+    assert m.PMDBClient._is_cloudflare_challenge(response) is True
+
+
+def test_json_403_with_cf_ray_and_no_challenge_markers_is_not_a_challenge():
+    response = _response(
+        status=403,
+        headers={"content-type": "application/json", "cf-ray": "abc123-SJC"},
+        data={"error": "forbidden"},
+        text='{"error":"forbidden"}',
+    )
+    assert m.PMDBClient._is_cloudflare_challenge(response) is False
+
+
+def test_non_403_status_is_never_a_cloudflare_challenge():
+    response = _response(
+        status=401,
+        headers={"content-type": "text/html", "cf-ray": "abc123-SJC"},
+        text="Just a moment...",
+    )
+    assert m.PMDBClient._is_cloudflare_challenge(response) is False
+
+
+def test_mapping_lookup_owned_by_ignores_malformed_entries_and_payloads():
+    assert m.PMDBClient._mapping_lookup_owned_by({"results": []}, 1, "movie") is False
+    assert m.PMDBClient._mapping_lookup_owned_by({"total": 0}, 1, "movie") is False
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": ["not-a-dict", {"tmdb_id": "abc", "media_type": "movie"}]}, 1, "movie"
+    ) is False
+    assert m.PMDBClient._mapping_lookup_owned_by(None, 1, "movie") is False
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": "46195", "media_type": "tv"}]}, 46195, "tv"
+    ) is True
+
+
+def test_mapping_lookup_owned_by_strict_tmdb_id_coercion():
+    # int entry vs int target
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": 46195, "media_type": "tv"}]}, 46195, "tv"
+    ) is True
+    # string entry vs int target, and the reverse framing of the same case
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": "46195", "media_type": "tv"}]}, 46195, "tv"
+    ) is True
+    # fractional numeric values must not match an integer tmdb_id
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": 46195.5, "media_type": "tv"}]}, 46195, "tv"
+    ) is False
+    # bool is a subclass of int in Python -- True/1 and False/0 must not
+    # be treated as equivalent tmdb_ids
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": True, "media_type": "tv"}]}, 1, "tv"
+    ) is False
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": False, "media_type": "tv"}]}, 0, "tv"
+    ) is False
+    # malformed/non-numeric values must not match
+    assert m.PMDBClient._mapping_lookup_owned_by(
+        {"results": [{"tmdb_id": "not-a-number", "media_type": "tv"}]}, 46195, "tv"
+    ) is False
+
+
 def test_duplicate_or_exists_detection_contract():
     by_code = m.PMDBSubmitResult(
         success=False,
