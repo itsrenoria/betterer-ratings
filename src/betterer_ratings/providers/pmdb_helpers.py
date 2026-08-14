@@ -205,6 +205,23 @@ def to_delete_result(response: APIResponse, endpoint: str = "") -> PMDBDeleteRes
             endpoint=endpoint,
         )
 
+    if response.status == 401:
+        # PMDB's own `validateApiKey` answers 401 when its upstream admin
+        # token is missing or stale, so a 401 here is a transient server-side
+        # condition rather than a rejection of our key -- an unknown rating id
+        # returns 404 and an ownership failure returns 403. Mirror
+        # `to_submit_result` so the delete leg backs off instead of failing
+        # the row permanently.
+        return PMDBDeleteResult(
+            success=False,
+            retryable=True,
+            retry_after_seconds=300,
+            error_text=text,
+            status_code=response.status,
+            error_code=error_code,
+            endpoint=endpoint,
+        )
+
     return PMDBDeleteResult(
         success=False,
         retryable=False,
