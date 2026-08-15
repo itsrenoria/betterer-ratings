@@ -1,119 +1,99 @@
 # betterer-ratings
 
-Docker-first worker for keeping a local ratings database in sync with configured
-catalog, ratings, archive, and destination services.
+Continuously discovers ratings through TMDB, IMDb, and MDBList, stores them in
+SQLite, and submits due ratings, mappings, and episode ratings to PublicMetaDB.
 
-The project is intended for personal automation. Bring your own service
-credentials, keep request rates conservative, and make sure your usage matches
-the terms of the services you configure.
+This is personal automation software. Use your own credentials, respect provider
+terms, and keep request rates appropriate for your plans.
 
-## What It Does
-
-The worker runs continuously and coordinates three jobs:
-
-- discover and refresh title metadata from configured catalog sources
-- normalize ratings and external identifiers into one local SQLite database
-- submit due rating, mapping, and episode-rating work to the configured destination
-
-There are no one-off discovery modes. Source scans, archive ingestion, episode
-rating ingestion, stale-title refreshes, and submission retries all run inside
-one long-lived process.
-
-## Quick Start
+## Run with Docker
 
 ```bash
 cp config.example.toml config.toml
 ```
 
-Edit `config.toml` and replace the placeholder values in `[api_keys]` with your
-own credentials. Review the scan intervals, source lists, rate limits, and batch
-size before starting the worker.
+Add your API keys to `config.toml`, review the source and rate-limit settings,
+then start the service:
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
-The dashboard and API are exposed on port `8087` by default:
+The dashboard is available at <http://localhost:8087>. Compose pulls the public
+`ghcr.io/itsrenoria/betterer-ratings:latest` image for `linux/amd64` or
+`linux/arm64`.
 
-```text
-http://localhost:8087
-```
+After the first successful image publication, the repository owner must confirm
+that the GHCR package visibility is **Public** in GitHub Package Settings before
+anonymous Compose pulls will work. This is a one-time setup step.
 
-## Runtime Model
+By default, runtime state stays on the host:
 
-The service has one mode: start, run forever, and stop gracefully on
-`SIGTERM` or `SIGINT`.
+- `config.toml` is mounted read-only at `/config/config.toml`.
+- `data/db` contains the SQLite database.
+- `data/imdb` contains IMDb archives and indexes.
+- `data/temp` contains temporary indexes.
 
-At startup it validates configuration, opens the SQLite database, recovers
-expired in-flight queue rows, starts the dashboard API, and runs the harvester
-and submitter until the container stops.
+Set `BETTERER_DATA_DB`, `BETTERER_DATA_IMDB`, or `BETTERER_DATA_TEMP` to
+override these host paths.
 
-The harvester loop:
-
-- processes episode rating archives first
-- refreshes failed local titles, stale titles, and new local rows
-- runs configured catalog source scans on the configured interval
-- ingests archive-backed title candidates during source scans
-- enriches candidates and queues destination writes
-
-The submitter loop claims the oldest due mapping, title-rating, or
-episode-rating work across all queues and retries failed work after the
-configured delay.
-
-## Storage
-
-The compose file mounts local runtime state into the container:
-
-- `./config.toml` -> `/config/config.toml`
-- `./data/...` -> container data directories
-
-The main database inside the container is:
-
-```text
-/data/db/betterer_ratings.sqlite3
-```
-
-Archive files, indexes, and temporary state are stored under the local `data/`
-directory. Local runtime data is ignored by Git.
+Do not delete `data/db` unless you intend to reset the service.
 
 ## Configuration
 
-Use `config.example.toml` as the schema reference. Public configuration covers:
+`config.example.toml` documents every public option. The repository defaults
+include:
 
-- API credentials
-- log level
-- source scan interval
-- title and episode refresh windows
-- source lists
-- archive filters
-- provider rate limits
-- MDBList ratings lookup batch size
+- seven-day title rating refreshes
+- daily episode rating refreshes
+- daily IMDb archive refresh at 13:00 UTC
+- TMDB at 40 requests per second
+- MDBList batches of 200 IDs (supported range: 1–200)
+- 16 submission workers
 
-Runtime internals such as container database paths, archive paths, submitter
-worker count, retry counts, and provider timeouts are intentionally fixed in
-the application.
+MDBList batch size and daily plan quota are separate limits.
 
-Default behavior:
+## Update or Roll Back
 
-- title/movie/series ratings refresh after 7 days
-- episode ratings refresh after 1 day
-- archive refresh runs daily at 13:00 UTC
-- TMDB requests are limited to 40 per second
-- MDBList ratings lookup batch size is 200 (supported range: 1..200 IDs)
-- MDBList daily plan quotas are separate from batch size and may still limit total requests
-- submitter worker count is 16
+```bash
+docker compose pull
+docker compose up -d
+```
 
-## Local Development
+For an exact rollback, copy the published manifest digest from the workflow
+summary, set this in a Compose `.env` file, and recreate the service:
+
+```text
+BETTERER_IMAGE=ghcr.io/itsrenoria/betterer-ratings@sha256:<manifest-digest>
+```
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+To follow `latest` again, remove `BETTERER_IMAGE`, then run the two commands
+above again.
+
+## Development
 
 ```bash
 python3 -m pip install -e ".[dev]"
-betterer-ratings --config config.toml
+pytest
+ruff check .
+mypy src
 ```
 
-The CLI intentionally has no subcommands. It is the same worker entry point used
-by Docker.
+Run locally with `betterer-ratings --config config.toml`, or build a local image:
 
-## Logs
+```bash
+docker build -t betterer-ratings:local .
+```
 
-Logs are structured JSON on stdout. Docker or your host logging stack should
-handle collection, retention, and rotation.
+Logs are written as structured JSON to stdout. The supplied Compose service
+rotates Docker logs.
+
+## License
+
+MIT. See `LICENSE`.

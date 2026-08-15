@@ -1,6 +1,6 @@
 services:
   betterer-ratings:
-    build: .
+    image: ${BETTERER_IMAGE:-ghcr.io/itsrenoria/betterer-ratings:latest}
     container_name: betterer-ratings
     restart: unless-stopped
     command: ["betterer-ratings", "--config", "/config/config.toml"]
@@ -11,3 +11,8 @@ services:
       - ${BETTERER_DATA_DB:-./data/db}:/data/db
       - ${BETTERER_DATA_IMDB:-./data/imdb}:/data/imdb
       - ${BETTERER_DATA_TEMP:-./data/temp}:/data/temp
+    logging:
+      driver: json-file
+      options:
+        max-size: "25m"
+        max-file: "4"
