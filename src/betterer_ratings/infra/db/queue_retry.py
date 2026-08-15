@@ -107,6 +107,49 @@ def clear_rating_pmdb_item_id(
         )
 
 
+def clear_mapping_pmdb_item_id(
+    conn: sqlite3.Connection,
+    *,
+    tmdb_id: int,
+    media_type: str,
+    id_type: str,
+) -> None:
+    with conn:
+        conn.execute(
+            """
+            UPDATE mappings
+            SET pmdb_item_id = NULL,
+                pmdb_item_value = NULL
+            WHERE tmdb_id = ? AND media_type = ? AND id_type = ?
+            """,
+            (tmdb_id, media_type, id_type),
+        )
+
+
+def clear_episode_rating_pmdb_item_id(
+    conn: sqlite3.Connection,
+    *,
+    tmdb_id: int,
+    media_type: str,
+    season: int,
+    episode: int,
+    label: str,
+) -> None:
+    with conn:
+        conn.execute(
+            """
+            UPDATE episode_ratings
+            SET pmdb_item_id = NULL
+            WHERE tmdb_id = ?
+              AND media_type = ?
+              AND season = ?
+              AND episode = ?
+              AND label = ?
+            """,
+            (tmdb_id, media_type, season, episode, label),
+        )
+
+
 def mark_rating_failed(
     conn: sqlite3.Connection,
     *,

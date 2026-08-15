@@ -296,6 +296,132 @@ def test_mapping_retry_submitted_and_failed_transitions(local_db):
     }
 
 
+def test_mapping_submission_tracks_and_explicitly_clears_cached_id_association(local_db):
+    db = local_db
+    _save_enriched(db, tmdb_id=21, media_type="movie", now_ts=100, mappings={"tvdb": "21"})
+
+    db.mark_mapping_submitted(
+        tmdb_id=21,
+        media_type="movie",
+        id_type="tvdb",
+        submitted_at=200,
+        pmdb_item_id="pmdb-mapping-21",
+    )
+    associated = db.conn.execute(
+        "SELECT pmdb_item_id, pmdb_item_value FROM mappings "
+        "WHERE tmdb_id = ? AND media_type = ? AND id_type = ?",
+        (21, "movie", "tvdb"),
+    ).fetchone()
+    assert dict(associated) == {
+        "pmdb_item_id": "pmdb-mapping-21",
+        "pmdb_item_value": "21",
+    }
+
+    db.mark_mapping_submitted(
+        tmdb_id=21,
+        media_type="movie",
+        id_type="tvdb",
+        submitted_at=300,
+        pmdb_item_id=None,
+    )
+    cleared = db.conn.execute(
+        "SELECT pmdb_item_id, pmdb_item_value FROM mappings "
+        "WHERE tmdb_id = ? AND media_type = ? AND id_type = ?",
+        (21, "movie", "tvdb"),
+    ).fetchone()
+    assert dict(cleared) == {"pmdb_item_id": None, "pmdb_item_value": None}
+
+
+def test_legacy_cached_mapping_is_requeued_once_during_normal_refresh(local_db):
+    db = local_db
+    _save_enriched(db, tmdb_id=22, media_type="movie", now_ts=100, mappings={"tvdb": "22"})
+    db.mark_mapping_submitted(
+        tmdb_id=22,
+        media_type="movie",
+        id_type="tvdb",
+        submitted_at=200,
+        pmdb_item_id="legacy-mapping-22",
+    )
+    db.conn.execute(
+        "UPDATE mappings SET pmdb_item_value = NULL "
+        "WHERE tmdb_id = ? AND media_type = ? AND id_type = ?",
+        (22, "movie", "tvdb"),
+    )
+
+    queued = _save_enriched(
+        db,
+        tmdb_id=22,
+        media_type="movie",
+        now_ts=300,
+        mappings={"tvdb": "22"},
+    )
+
+    row = db.conn.execute(
+        "SELECT pmdb_status, pmdb_item_id, pmdb_item_value FROM mappings "
+        "WHERE tmdb_id = ? AND media_type = ? AND id_type = ?",
+        (22, "movie", "tvdb"),
+    ).fetchone()
+    assert queued[1] == 1
+    assert dict(row) == {
+        "pmdb_status": "pending",
+        "pmdb_item_id": "legacy-mapping-22",
+        "pmdb_item_value": None,
+    }
+
+
+def test_changed_mapping_preserves_old_association_until_safe_replacement(local_db):
+    db = local_db
+    _save_enriched(db, tmdb_id=23, media_type="movie", now_ts=100, mappings={"tvdb": "old"})
+    db.mark_mapping_submitted(
+        tmdb_id=23,
+        media_type="movie",
+        id_type="tvdb",
+        submitted_at=200,
+        pmdb_item_id="pmdb-old-23",
+    )
+
+    _save_enriched(
+        db,
+        tmdb_id=23,
+        media_type="movie",
+        now_ts=300,
+        mappings={"tvdb": "new"},
+    )
+
+    row = db.conn.execute(
+        "SELECT id_value, pmdb_status, pmdb_item_id, pmdb_item_value FROM mappings "
+        "WHERE tmdb_id = ? AND media_type = ? AND id_type = ?",
+        (23, "movie", "tvdb"),
+    ).fetchone()
+    assert dict(row) == {
+        "id_value": "new",
+        "pmdb_status": "pending",
+        "pmdb_item_id": "pmdb-old-23",
+        "pmdb_item_value": "old",
+    }
+
+
+def test_clear_mapping_pmdb_item_id_removes_id_and_associated_value(local_db):
+    db = local_db
+    _save_enriched(db, tmdb_id=24, media_type="movie", now_ts=100, mappings={"tvdb": "24"})
+    db.mark_mapping_submitted(
+        tmdb_id=24,
+        media_type="movie",
+        id_type="tvdb",
+        submitted_at=200,
+        pmdb_item_id="pmdb-mapping-24",
+    )
+
+    db.clear_mapping_pmdb_item_id(24, "movie", "tvdb")
+
+    row = db.conn.execute(
+        "SELECT pmdb_item_id, pmdb_item_value FROM mappings "
+        "WHERE tmdb_id = ? AND media_type = ? AND id_type = ?",
+        (24, "movie", "tvdb"),
+    ).fetchone()
+    assert dict(row) == {"pmdb_item_id": None, "pmdb_item_value": None}
+
+
 def test_episode_claim_batch_groups_by_first_pending_season_and_orders_episodes(local_db):
     db = local_db
     queued = db.save_imdb_episode_ratings(

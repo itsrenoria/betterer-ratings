@@ -87,7 +87,7 @@ Use `config.example.toml` as the schema reference. Public configuration covers:
 - source lists
 - archive filters
 - provider rate limits
-- ratings batch size
+- MDBList ratings lookup batch size
 
 Runtime internals such as container database paths, archive paths, submitter
 worker count, retry counts, and provider timeouts are intentionally fixed in
@@ -98,7 +98,9 @@ Default behavior:
 - title/movie/series ratings refresh after 7 days
 - episode ratings refresh after 1 day
 - archive refresh runs daily at 13:00 UTC
-- ratings batch size is 100
+- TMDB requests are limited to 40 per second
+- MDBList ratings lookup batch size is 200 (supported range: 1..200 IDs)
+- MDBList daily plan quotas are separate from batch size and may still limit total requests
 - submitter worker count is 16
 
 ## Local Development

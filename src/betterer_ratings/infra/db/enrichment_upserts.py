@@ -319,7 +319,7 @@ def upsert_mapping(
 
     existing = conn.execute(
         """
-        SELECT id_value, pmdb_status, pmdb_item_id
+        SELECT id_value, pmdb_status, pmdb_item_id, pmdb_item_value
         FROM mappings
         WHERE tmdb_id = ? AND media_type = ? AND id_type = ?
         """,
@@ -350,8 +350,13 @@ def upsert_mapping(
 
     value_changed = str(existing["id_value"]) != id_value
     previous_status = str(existing["pmdb_status"])
+    needs_legacy_validation = (
+        previous_status == "submitted"
+        and bool(existing["pmdb_item_id"])
+        and not bool(existing["pmdb_item_value"])
+    )
 
-    if value_changed or previous_status in {"failed", "retry"}:
+    if value_changed or previous_status in {"failed", "retry"} or needs_legacy_validation:
         conn.execute(
             """
             UPDATE mappings

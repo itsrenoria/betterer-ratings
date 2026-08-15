@@ -96,6 +96,7 @@ def _migration_001_initial_schema(conn: sqlite3.Connection) -> None:
                 id_value TEXT NOT NULL,
                 fetched_at INTEGER NOT NULL,
                 pmdb_item_id TEXT,
+                pmdb_item_value TEXT,
                 pmdb_status TEXT NOT NULL DEFAULT 'pending',
                 pmdb_claimed_at INTEGER,
                 pmdb_submitted_at INTEGER,
@@ -254,9 +255,20 @@ def _migration_002_queue_claim_indexes(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migration_003_mapping_item_value(conn: sqlite3.Connection) -> None:
+    with conn:
+        ensure_column(
+            conn,
+            table_name="mappings",
+            column_name="pmdb_item_value",
+            column_type="TEXT",
+        )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "initial_schema", _migration_001_initial_schema),
     (2, "queue_claim_indexes", _migration_002_queue_claim_indexes),
+    (3, "mapping_item_value", _migration_003_mapping_item_value),
 )
 
 

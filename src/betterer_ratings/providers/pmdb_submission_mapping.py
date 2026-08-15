@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from dataclasses import replace
+from typing import Any, Optional, cast
 
 from betterer_ratings.core.retry import parse_retry_after
 from betterer_ratings.domain.models import PMDBDeleteResult, PMDBSubmitResult
+from betterer_ratings.providers.pmdb_helpers import (
+    is_cloudflare_challenge,
+    is_not_owned_delete_failure,
+    mapping_lookup_owner_keys,
+)
 
 
 async def delete_mapping_by_id(client: Any, mapping_id: str) -> PMDBDeleteResult:
@@ -58,6 +64,18 @@ async def resolve_mapping_duplicate_or_conflict(
             error_code=client._extract_error_code(lookup.data, lookup.text),
             endpoint="/api/external/mappings/lookup",
         )
+    if lookup.status == 403 and is_cloudflare_challenge(lookup):
+        return PMDBSubmitResult(
+            success=False,
+            retryable=True,
+            retry_after_seconds=300,
+            duplicate_or_exists=False,
+            error_text=lookup.text or "Cloudflare challenge during mapping owner lookup",
+            item_id=None,
+            status_code=lookup.status,
+            error_code="cloudflare_challenge",
+            endpoint="/api/external/mappings/lookup",
+        )
     if lookup.status == 403:
         return PMDBSubmitResult(
             success=False,
@@ -100,8 +118,7 @@ async def resolve_mapping_duplicate_or_conflict(
             endpoint="/api/external/mappings/lookup",
         )
 
-    total_owners = lookup.data.get("total") if isinstance(lookup.data, dict) else None
-    if isinstance(total_owners, int) and total_owners > 0:
+    if mapping_lookup_owner_keys(lookup.data):
         return PMDBSubmitResult(
             success=False,
             retryable=False,
@@ -140,7 +157,30 @@ async def submit_mapping(
     media_type: str,
     id_type: str,
     id_value: str,
+    existing_pmdb_item_id: Optional[str] = None,
 ) -> PMDBSubmitResult:
+    cached_item_invalidated = False
+    if existing_pmdb_item_id:
+        delete_result = await client._delete_mapping_by_id(existing_pmdb_item_id)
+        if delete_result.success:
+            cached_item_invalidated = True
+        elif is_not_owned_delete_failure(delete_result):
+            cached_item_invalidated = True
+        else:
+            return PMDBSubmitResult(
+                success=False,
+                retryable=delete_result.retryable,
+                retry_after_seconds=delete_result.retry_after_seconds
+                if delete_result.retryable
+                else 0,
+                duplicate_or_exists=False,
+                error_text=delete_result.error_text,
+                item_id=None,
+                status_code=delete_result.status_code,
+                error_code=delete_result.error_code,
+                endpoint=delete_result.endpoint or "/api/external/mappings",
+            )
+
     response = await client._post_with_gates(
         url=f"{client.base_url}/api/external/mappings",
         payload={
@@ -164,5 +204,9 @@ async def submit_mapping(
             id_type=id_type,
             id_value=id_value,
         )
+        if cached_item_invalidated:
+            resolved = replace(resolved, stale_cached_item_id=True)
         return cast(PMDBSubmitResult, resolved)
+    if cached_item_invalidated:
+        result = replace(result, stale_cached_item_id=True)
     return cast(PMDBSubmitResult, result)

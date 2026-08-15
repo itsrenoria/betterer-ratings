@@ -51,6 +51,18 @@ def _log_source_summary(*, logger: Any, source: Any, stat: Dict[str, int]) -> No
     )
 
 
+def _is_valid_first_page(response: Any) -> bool:
+    return (
+        bool(response.ok)
+        and isinstance(response.data, dict)
+        and isinstance(response.data.get("results"), list)
+    )
+
+
+def _is_provider_wide_failure(status: int) -> bool:
+    return status in {0, 401, 403, 429} or 500 <= status <= 599
+
+
 def _process_source_page(
     *,
     response: Any,
@@ -214,7 +226,8 @@ async def scan_tmdb_sources(
         db.title_key_set() if hasattr(db, "title_key_set") else set()
     )
 
-    for source in tmdb_sources:
+    halt_tmdb_sources = False
+    for source_index, source in enumerate(tmdb_sources):
         if stop_event.is_set():
             interrupted = True
             break
@@ -238,6 +251,41 @@ async def scan_tmdb_sources(
 
             if page == 1:
                 first_response = await tmdb_client.fetch_source_page(source, 1)
+                if not _is_valid_first_page(first_response):
+                    status = int(getattr(first_response, "status", 0) or 0)
+                    pages_scanned += 1
+                    stat["errors"] += 1
+                    stat["aborted"] = 1
+                    stat["abort_status"] = status
+                    previous_effective = int(stat["pages_effective"])
+                    stat["pages_effective"] = 1
+                    effective_target_pages += 1 - previous_effective
+                    publish_scan_progress_fn(source, current_page=1)
+                    provider_wide = _is_provider_wide_failure(status)
+                    if logger is not None:
+                        logger.warning(
+                            "[TMDB] Source aborted after invalid first page: source=%s status=%s provider_wide=%s",
+                            source.name,
+                            status,
+                            provider_wide,
+                            extra={
+                                "event": "tmdb.source_aborted",
+                                "source": source.name,
+                                "status": status,
+                                "provider_wide": provider_wide,
+                            },
+                        )
+                    if provider_wide:
+                        for remaining_source in tmdb_sources[source_index + 1 :]:
+                            remaining_stat = source_stats[remaining_source.name]
+                            effective_target_pages -= int(
+                                remaining_stat["pages_effective"]
+                            )
+                            remaining_stat["pages_effective"] = 0
+                            remaining_stat["aborted"] = 1
+                            remaining_stat["abort_status"] = status
+                        halt_tmdb_sources = True
+                    break
                 (
                     pages_scanned,
                     effective_target_pages,
@@ -324,7 +372,7 @@ async def scan_tmdb_sources(
                 break
 
         _log_source_summary(logger=logger, source=source, stat=stat)
-        if interrupted:
+        if interrupted or halt_tmdb_sources:
             break
 
     return interrupted, pages_scanned, effective_target_pages, raw_seen_total

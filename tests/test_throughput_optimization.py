@@ -76,11 +76,15 @@ def test_mapping_group_preflight_resolves_existing_and_posts_only_missing():
     class FakeDB:
         def __init__(self):
             self.submitted = []
+            self.cleared = []
 
         def mark_mapping_submitted(
             self, tmdb_id, media_type, id_type, submitted_at, pmdb_item_id=None
         ):
             self.submitted.append((tmdb_id, media_type, id_type, submitted_at, pmdb_item_id))
+
+        def clear_mapping_pmdb_item_id(self, tmdb_id, media_type, id_type):
+            self.cleared.append((tmdb_id, media_type, id_type))
 
     posted = []
 
@@ -91,9 +95,27 @@ def test_mapping_group_preflight_resolves_existing_and_posts_only_missing():
     asyncio.run(
         submit_mapping_group(
             rows=[
-                {"tmdb_id": 10, "media_type": "movie", "id_type": "imdb", "id_value": "tt10"},
-                {"tmdb_id": 10, "media_type": "movie", "id_type": "tvdb", "id_value": "tv10"},
-                {"tmdb_id": 10, "media_type": "movie", "id_type": "trakt", "id_value": "tr10"},
+                {
+                    "tmdb_id": 10,
+                    "media_type": "movie",
+                    "id_type": "imdb",
+                    "id_value": "tt10",
+                    "pmdb_item_id": None,
+                },
+                {
+                    "tmdb_id": 10,
+                    "media_type": "movie",
+                    "id_type": "tvdb",
+                    "id_value": "tv10",
+                    "pmdb_item_id": None,
+                },
+                {
+                    "tmdb_id": 10,
+                    "media_type": "movie",
+                    "id_type": "trakt",
+                    "id_value": "tr10",
+                    "pmdb_item_id": None,
+                },
             ],
             pmdb_client=FakePMDB(),
             db=db,
@@ -106,3 +128,166 @@ def test_mapping_group_preflight_resolves_existing_and_posts_only_missing():
     assert {item[2] for item in db.submitted} == {"imdb", "tvdb"}
     assert {item[4] for item in db.submitted} == {None}
     assert posted == ["trakt"]
+
+
+def test_mapping_group_validates_cached_id_before_resolving_by_value():
+    class FakePMDB:
+        async def _fetch_existing_mappings(self, tmdb_id, media_type):
+            return APIResponse(
+                status=200,
+                headers={},
+                data={
+                    "mappings": {
+                        "imdb": [{"id": "cached-imdb", "value": "tt10"}],
+                        "tvdb": [
+                            {"id": "cached-old-tvdb", "value": "old"},
+                            {"id": "someone-elses-tvdb", "value": "new"},
+                        ],
+                        "trakt": [{"id": "someone-elses-trakt", "value": "tr10"}],
+                    }
+                },
+                text="",
+            )
+
+        @staticmethod
+        def _extract_mappings_for_type(payload, id_type):
+            return payload.get("mappings", {}).get(id_type, [])
+
+        @staticmethod
+        def _mapping_entry_matches_value(entry, id_value):
+            return entry.get("value") == id_value
+
+        @staticmethod
+        def _extract_entry_id(entry):
+            return entry.get("id")
+
+    class FakeDB:
+        def __init__(self):
+            self.submitted = []
+
+        def mark_mapping_submitted(
+            self, tmdb_id, media_type, id_type, submitted_at, pmdb_item_id=None
+        ):
+            self.submitted.append((tmdb_id, media_type, id_type, submitted_at, pmdb_item_id))
+
+    posted = []
+
+    async def post_unresolved(*, row):
+        posted.append((str(row["id_type"]), row["pmdb_item_id"]))
+
+    db = FakeDB()
+    asyncio.run(
+        submit_mapping_group(
+            rows=[
+                {
+                    "tmdb_id": 10,
+                    "media_type": "movie",
+                    "id_type": "imdb",
+                    "id_value": "tt10",
+                    "pmdb_item_id": "cached-imdb",
+                },
+                {
+                    "tmdb_id": 10,
+                    "media_type": "movie",
+                    "id_type": "tvdb",
+                    "id_value": "new",
+                    "pmdb_item_id": "cached-old-tvdb",
+                },
+                {
+                    "tmdb_id": 10,
+                    "media_type": "movie",
+                    "id_type": "trakt",
+                    "id_value": "tr10",
+                    "pmdb_item_id": None,
+                },
+            ],
+            pmdb_client=FakePMDB(),
+            db=db,
+            submit_mapping_fn=post_unresolved,
+            now_epoch_fn=lambda: 500,
+            logger=type("Logger", (), {"info": lambda *args, **kwargs: None})(),
+        )
+    )
+
+    assert db.submitted == [
+        (10, "movie", "imdb", 500, "cached-imdb"),
+        (10, "movie", "trakt", 500, None),
+    ]
+    assert posted == [("tvdb", "cached-old-tvdb")]
+
+
+def test_mapping_group_never_deletes_an_unverified_cached_id():
+    class FakePMDB:
+        def __init__(self, lookup):
+            self.lookup = lookup
+
+        async def _fetch_existing_mappings(self, _tmdb_id, _media_type):
+            return self.lookup
+
+        @staticmethod
+        def _extract_mappings_for_type(payload, id_type):
+            return payload.get("mappings", {}).get(id_type, [])
+
+        @staticmethod
+        def _mapping_entry_matches_value(entry, id_value):
+            return entry.get("value") == id_value
+
+        @staticmethod
+        def _extract_entry_id(entry):
+            return entry.get("id")
+
+    class FakeDB:
+        def __init__(self):
+            self.cleared = []
+
+        def clear_mapping_pmdb_item_id(self, tmdb_id, media_type, id_type):
+            self.cleared.append((tmdb_id, media_type, id_type))
+
+    row = {
+        "tmdb_id": 10,
+        "media_type": "movie",
+        "id_type": "tvdb",
+        "id_value": "desired",
+        "pmdb_item_id": "untrusted-cache-id",
+    }
+
+    async def run_case(lookup):
+        submitted_ids = []
+
+        async def submit_unresolved(*, row):
+            submitted_ids.append(row["pmdb_item_id"])
+
+        db = FakeDB()
+        await submit_mapping_group(
+            rows=[row],
+            pmdb_client=FakePMDB(lookup),
+            db=db,
+            submit_mapping_fn=submit_unresolved,
+            now_epoch_fn=lambda: 500,
+            logger=type("Logger", (), {"info": lambda *args, **kwargs: None})(),
+        )
+        return submitted_ids, db.cleared
+
+    absent_ids, absent_clears = asyncio.run(
+        run_case(
+            APIResponse(
+                status=200,
+                headers={},
+                data={"mappings": {"tvdb": []}},
+                text="",
+            )
+        )
+    )
+    failed_ids, failed_clears = asyncio.run(
+        run_case(APIResponse(status=500, headers={}, data=None, text="temporary"))
+    )
+    malformed_ids, malformed_clears = asyncio.run(
+        run_case(APIResponse(status=200, headers={}, data={}, text=""))
+    )
+
+    assert absent_ids == [None]
+    assert absent_clears == [(10, "movie", "tvdb")]
+    assert failed_ids == [None]
+    assert failed_clears == []
+    assert malformed_ids == [None]
+    assert malformed_clears == []

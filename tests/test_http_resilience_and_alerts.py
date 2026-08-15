@@ -33,6 +33,115 @@ def _response():
     )
 
 
+class _FakeGate:
+    name = "provider"
+
+    def __init__(self, *, acquired=True, remaining=0):
+        self.acquired = acquired
+        self.remaining = remaining
+        self.paused: list[tuple[int, str]] = []
+        self.acquire_budgets: list[int | None] = []
+
+    async def acquire(self, max_pause_wait_seconds=None):
+        self.acquire_budgets.append(max_pause_wait_seconds)
+        return self.acquired
+
+    def observe_headers(self, _headers, _status):
+        pass
+
+    def pause_for(self, seconds, reason):
+        self.paused.append((seconds, reason))
+
+    def pause_remaining(self):
+        return self.remaining
+
+
+def _rate_limited(retry_after: int):
+    return httpx.Response(
+        429,
+        headers={"Retry-After": str(retry_after)},
+        json={"error": "rate limited"},
+        request=httpx.Request("GET", "https://example.test/data"),
+    )
+
+
+def test_long_retry_after_is_persisted_and_returned_without_inline_sleep(monkeypatch, caplog):
+    transport = _FakeHTTPXClient([_rate_limited(3600), _response()])
+    gate = _FakeGate()
+    sleeps: list[float] = []
+    client = HTTPClient(timeout_seconds=5, max_retries=3, client_factory=lambda: transport)
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("betterer_ratings.infra.http.client.asyncio.sleep", record_sleep)
+
+    with caplog.at_level(logging.WARNING, logger="betterer-ratings"):
+        result = asyncio.run(
+            client.request_json(
+                method="GET",
+                url="https://example.test/data",
+                gate=gate,
+                max_pause_wait_seconds=20,
+            )
+        )
+
+    assert result.status == 429
+    assert result.headers["retry-after"] == "3600"
+    assert transport.requests == 1
+    assert sleeps == []
+    assert gate.paused == [(3600, "429 Too Many Requests")]
+    deferred = next(
+        record for record in caplog.records if getattr(record, "event", "") == "http.rate_limit_deferred"
+    )
+    assert deferred.retry_after_seconds == 3600
+
+
+def test_existing_long_pause_returns_remaining_retry_after_without_request():
+    transport = _FakeHTTPXClient([_response()])
+    gate = _FakeGate(acquired=False, remaining=1800)
+    client = HTTPClient(timeout_seconds=5, max_retries=3, client_factory=lambda: transport)
+
+    result = asyncio.run(
+        client.request_json(
+            method="GET",
+            url="https://example.test/data",
+            gate=gate,
+            max_pause_wait_seconds=20,
+        )
+    )
+
+    assert result.status == 429
+    assert result.text == "service paused"
+    assert result.headers["retry-after"] == "1800"
+    assert transport.requests == 0
+
+
+def test_short_retry_after_still_retries_inline(monkeypatch):
+    transport = _FakeHTTPXClient([_rate_limited(2), _response()])
+    gate = _FakeGate()
+    sleeps: list[float] = []
+    client = HTTPClient(timeout_seconds=5, max_retries=3, client_factory=lambda: transport)
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("betterer_ratings.infra.http.client.asyncio.sleep", record_sleep)
+
+    result = asyncio.run(
+        client.request_json(
+            method="GET",
+            url="https://example.test/data",
+            gate=gate,
+            max_pause_wait_seconds=20,
+        )
+    )
+
+    assert result.status == 200
+    assert transport.requests == 2
+    assert sleeps == [2]
+
+
 @pytest.mark.parametrize("error_type", [httpx.ReadError, httpx.RemoteProtocolError])
 def test_repeated_read_or_protocol_errors_recycle_pool_and_log_details(
     monkeypatch, caplog, error_type

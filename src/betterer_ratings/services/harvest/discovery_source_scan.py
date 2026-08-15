@@ -58,6 +58,8 @@ async def collect_source_candidates(
             "errors": 0,
             "first_page": 0,
             "last_page": 0,
+            "aborted": 0,
+            "abort_status": 0,
         }
         for source in scan_sources
     }

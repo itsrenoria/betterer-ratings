@@ -10,6 +10,7 @@ from betterer_ratings.constants import (
     CONTAINER_DATABASE_PATH,
     CONTAINER_IMDB_ARCHIVE_PATH,
     CONTAINER_TEMP_PATH,
+    DEFAULT_CONFIG,
 )
 
 
@@ -58,6 +59,13 @@ def test_repository_config_example_uses_simplified_schema():
     assert loaded.runtime.title_refresh_days == 7
     assert loaded.runtime.episode_refresh_days == 1
     assert len(loaded.tmdb.sources) == 10
+    assert loaded.tmdb.rate_limit.requests == 40
+    assert loaded.mdblist.batch_size == 200
+
+
+def test_repository_defaults_use_documented_provider_limits():
+    assert DEFAULT_CONFIG["tmdb"]["rate_limit"]["requests"] == 40
+    assert DEFAULT_CONFIG["mdblist"]["batch_size"] == 200
 
 
 def test_config_objects_do_not_expose_removed_feature_shims(base_valid_config):

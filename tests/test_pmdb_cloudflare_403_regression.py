@@ -97,6 +97,80 @@ def test_genuine_cloudflare_challenge_still_pauses_both_gates():
     assert contribution_gate.paused == [(300, "Cloudflare challenge")]
 
 
+def test_cf_mitigated_header_is_the_primary_challenge_signal():
+    response = APIResponse(
+        status=403,
+        headers={
+            "content-type": "application/octet-stream",
+            "cf-mitigated": "challenge",
+        },
+        data=None,
+        text="",
+    )
+    api_gate, contribution_gate = _observe(response)
+    assert api_gate.paused == [(300, "Cloudflare challenge")]
+    assert contribution_gate.paused == [(300, "Cloudflare challenge")]
+
+
+def test_ordinary_html_403_does_not_pause_pmdb_gates():
+    response = APIResponse(
+        status=403,
+        headers={
+            "content-type": "text/html; charset=UTF-8",
+            "cf-ray": "8f1a2b3c4d5e6f7g-SJC",
+        },
+        data=None,
+        text="Access denied",
+    )
+    api_gate, contribution_gate = _observe(response)
+    assert api_gate.paused == []
+    assert contribution_gate.paused == []
+
+
+def test_attention_required_html_marker_remains_a_challenge_fallback():
+    response = APIResponse(
+        status=403,
+        headers={"content-type": "text/html; charset=UTF-8"},
+        data=None,
+        text="Attention required! | Cloudflare",
+    )
+    api_gate, contribution_gate = _observe(response)
+    assert api_gate.paused == [(300, "Cloudflare challenge")]
+    assert contribution_gate.paused == [(300, "Cloudflare challenge")]
+
+
+def test_confirmed_challenge_delete_is_retryable():
+    response = APIResponse(
+        status=403,
+        headers={"cf-mitigated": "challenge", "content-type": "text/html"},
+        data=None,
+        text="challenge",
+    )
+
+    result = PMDBClient._to_delete_result(response, endpoint="/api/external/mappings/stale")
+
+    assert result.success is False
+    assert result.retryable is True
+    assert result.retry_after_seconds == 300
+    assert result.error_code == "cloudflare_challenge"
+
+
+def test_confirmed_challenge_mapping_create_is_retryable():
+    response = APIResponse(
+        status=403,
+        headers={"cf-mitigated": "challenge", "content-type": "text/html"},
+        data=None,
+        text="challenge",
+    )
+
+    result = PMDBClient._to_submit_result(response, endpoint="/api/external/mappings")
+
+    assert result.success is False
+    assert result.retryable is True
+    assert result.retry_after_seconds == 300
+    assert result.error_code == "cloudflare_challenge"
+
+
 def test_401_gate_pause_behavior_is_unchanged():
     response = APIResponse(
         status=401,

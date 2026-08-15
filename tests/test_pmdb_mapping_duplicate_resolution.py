@@ -118,6 +118,49 @@ def test_owned_by_other_title_is_non_retryable_and_distinctly_coded():
     assert result.status_code == 409
 
 
+def test_explicit_other_owner_does_not_depend_on_total_metadata():
+    for payload in (
+        {"results": [{"tmdb_id": 290689, "media_type": "tv"}]},
+        {"results": [{"tmdb_id": 290689, "media_type": "tv"}], "total": "1"},
+        {"results": [{"tmdb_id": 290689, "media_type": "tv"}], "total": 0},
+    ):
+        _client, result = _resolve(
+            _response(data=payload),
+            tmdb_id=46195,
+            media_type="tv",
+            id_type="tvdb",
+            id_value="102261",
+        )
+
+        assert result.success is False
+        assert result.retryable is False
+        assert result.error_code == "mapping_owned_by_other"
+
+
+def test_malformed_owner_entries_remain_duplicate_unresolved():
+    response = _response(
+        data={
+            "results": [
+                {"tmdb_id": True, "media_type": "tv"},
+                {"tmdb_id": 290689.5, "media_type": "tv"},
+                {"tmdb_id": 290689},
+                "not-an-owner",
+            ],
+            "total": 4,
+        }
+    )
+    _client, result = _resolve(
+        response,
+        tmdb_id=46195,
+        media_type="tv",
+        id_type="tvdb",
+        id_value="102261",
+    )
+
+    assert result.success is False
+    assert result.error_code == "duplicate_unresolved"
+
+
 def test_zero_owners_falls_back_to_duplicate_unresolved():
     response = _response(data={"results": [], "total": 0})
     _client, result = _resolve(
