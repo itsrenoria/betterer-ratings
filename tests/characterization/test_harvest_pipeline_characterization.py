@@ -143,6 +143,33 @@ def test_provider_wide_first_page_failure_halts_remaining_tmdb_sources():
     assert stats["tv/popular"]["pages_effective"] == 0
 
 
+def test_first_page_transport_exception_halts_remaining_tmdb_sources():
+    sources = [
+        TMDBSource("movie/popular", "/movie/popular", "movie", 3),
+        TMDBSource("tv/popular", "/tv/popular", "tv", 2),
+    ]
+    stats = _source_stats(sources)
+
+    def raise_timeout(_source, _page):
+        raise TimeoutError("TMDB request timed out")
+
+    tmdb = _RecordingSourceTMDB(raise_timeout)
+
+    interrupted, pages_scanned, effective_pages, _raw = _run_tmdb_scan(sources, tmdb, stats)
+
+    assert interrupted is False
+    assert tmdb.calls == [("movie/popular", 1)]
+    assert pages_scanned == 1
+    assert effective_pages == 1
+    assert stats["movie/popular"]["errors"] == 1
+    assert stats["movie/popular"]["aborted"] == 1
+    assert stats["movie/popular"]["abort_status"] == 0
+    assert stats["movie/popular"]["pages_effective"] == 1
+    assert stats["tv/popular"]["aborted"] == 1
+    assert stats["tv/popular"]["abort_status"] == 0
+    assert stats["tv/popular"]["pages_effective"] == 0
+
+
 def test_endpoint_first_page_failure_skips_only_that_tmdb_source():
     sources = [
         TMDBSource("movie/popular", "/movie/popular", "movie", 3),

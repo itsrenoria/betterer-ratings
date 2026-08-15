@@ -250,8 +250,17 @@ async def scan_tmdb_sources(
                 break
 
             if page == 1:
-                first_response = await tmdb_client.fetch_source_page(source, 1)
-                if not _is_valid_first_page(first_response):
+                try:
+                    first_response = await tmdb_client.fetch_source_page(source, 1)
+                except Exception as exc:
+                    first_response = None
+                    if logger is not None:
+                        logger.warning(
+                            "[TMDB] %s page 1 failed with exception: %s",
+                            source.name,
+                            exc,
+                        )
+                if first_response is None or not _is_valid_first_page(first_response):
                     status = int(getattr(first_response, "status", 0) or 0)
                     pages_scanned += 1
                     stat["errors"] += 1
