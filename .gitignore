@@ -1,31 +1,12 @@
+.venv*/
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
-.venv*/
 .env
-
-# Local runtime DB/state
-data/
-config.toml
-mdblist_pmdb.sqlite3
-*.sqlite3
-*.sqlite3-wal
-*.sqlite3-shm
-*.db
-*.db-wal
-*.db-shm
-
-# Local artifacts
-*.log
-logs/
-imdb/
-.DS_Store
-.vscode/
-.worktrees/
-
-# Local docs + reference workspace
+/config.toml
+/data/
 /docs/
-tmp/
+.DS_Store
