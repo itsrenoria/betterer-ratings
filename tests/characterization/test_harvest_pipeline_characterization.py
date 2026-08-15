@@ -5,7 +5,7 @@ import logging
 
 from betterer_ratings.core.ids import normalize_imdb_title_id
 from betterer_ratings.core.parsing import parse_int
-from betterer_ratings.domain.models import Candidate, TMDBSource
+from betterer_ratings.domain.models import APIResponse, Candidate, TMDBSource
 from betterer_ratings.services.harvest.details import fetch_tmdb_details
 from betterer_ratings.services.harvest.discovery_tmdb_scan import scan_tmdb_sources
 from betterer_ratings.services.harvest.imdb_mapping_helpers import resolve_imdb_to_tmdb_local
@@ -58,6 +58,169 @@ class _FakeSourceTMDB:
 
     async def fetch_source_page(self, _source, _page):
         return _FakeSourceResponse()
+
+
+class _RecordingSourceTMDB:
+    def __init__(self, response_fn):
+        self.response_fn = response_fn
+        self.calls: list[tuple[str, int]] = []
+
+    async def fetch_source_page(self, source, page):
+        self.calls.append((source.name, page))
+        return self.response_fn(source, page)
+
+
+def _source_stats(sources):
+    return {
+        source.name: {
+            "pages_configured": source.max_pages,
+            "pages_effective": source.max_pages,
+            "pages_discovered": 0,
+            "pages_fetched": 0,
+            "raw_seen": 0,
+            "added": 0,
+            "duplicates": 0,
+            "skipped": 0,
+            "unsupported": 0,
+            "errors": 0,
+            "first_page": 0,
+            "last_page": 0,
+            "aborted": 0,
+            "abort_status": 0,
+        }
+        for source in sources
+    }
+
+
+def _run_tmdb_scan(sources, tmdb, stats):
+    return asyncio.run(
+        scan_tmdb_sources(
+            stop_event=asyncio.Event(),
+            db=_FakeSourceDB(),
+            tmdb_client=tmdb,
+            tmdb_sources=sources,
+            source_stats=stats,
+            candidates=[],
+            seen=set(),
+            parse_int_fn=parse_int,
+            candidate_cls=Candidate,
+            publish_scan_progress_fn=lambda *_args, **_kwargs: None,
+            logger=None,
+            page_batch_concurrency=1,
+            pages_scanned=0,
+            effective_target_pages=sum(source.max_pages for source in sources),
+            raw_seen_total=0,
+        )
+    )
+
+
+def test_provider_wide_first_page_failure_halts_remaining_tmdb_sources():
+    sources = [
+        TMDBSource("movie/popular", "/movie/popular", "movie", 3),
+        TMDBSource("tv/popular", "/tv/popular", "tv", 2),
+    ]
+    stats = _source_stats(sources)
+    tmdb = _RecordingSourceTMDB(
+        lambda _source, _page: APIResponse(
+            status=401,
+            headers={},
+            data={"status_message": "Invalid API key"},
+            text="Invalid API key",
+        )
+    )
+
+    interrupted, pages_scanned, effective_pages, _raw = _run_tmdb_scan(sources, tmdb, stats)
+
+    assert interrupted is False
+    assert tmdb.calls == [("movie/popular", 1)]
+    assert pages_scanned == 1
+    assert effective_pages == 1
+    assert stats["movie/popular"]["aborted"] == 1
+    assert stats["movie/popular"]["abort_status"] == 401
+    assert stats["movie/popular"]["pages_effective"] == 1
+    assert stats["tv/popular"]["aborted"] == 1
+    assert stats["tv/popular"]["abort_status"] == 401
+    assert stats["tv/popular"]["pages_effective"] == 0
+
+
+def test_first_page_transport_exception_halts_remaining_tmdb_sources():
+    sources = [
+        TMDBSource("movie/popular", "/movie/popular", "movie", 3),
+        TMDBSource("tv/popular", "/tv/popular", "tv", 2),
+    ]
+    stats = _source_stats(sources)
+
+    def raise_timeout(_source, _page):
+        raise TimeoutError("TMDB request timed out")
+
+    tmdb = _RecordingSourceTMDB(raise_timeout)
+
+    interrupted, pages_scanned, effective_pages, _raw = _run_tmdb_scan(sources, tmdb, stats)
+
+    assert interrupted is False
+    assert tmdb.calls == [("movie/popular", 1)]
+    assert pages_scanned == 1
+    assert effective_pages == 1
+    assert stats["movie/popular"]["errors"] == 1
+    assert stats["movie/popular"]["aborted"] == 1
+    assert stats["movie/popular"]["abort_status"] == 0
+    assert stats["movie/popular"]["pages_effective"] == 1
+    assert stats["tv/popular"]["aborted"] == 1
+    assert stats["tv/popular"]["abort_status"] == 0
+    assert stats["tv/popular"]["pages_effective"] == 0
+
+
+def test_endpoint_first_page_failure_skips_only_that_tmdb_source():
+    sources = [
+        TMDBSource("movie/popular", "/movie/popular", "movie", 3),
+        TMDBSource("tv/popular", "/tv/popular", "tv", 2),
+    ]
+    stats = _source_stats(sources)
+
+    def response_for(source, _page):
+        if source.name == "movie/popular":
+            return APIResponse(status=404, headers={}, data={}, text="not found")
+        return APIResponse(
+            status=200,
+            headers={},
+            data={"total_pages": 1, "results": []},
+            text="",
+        )
+
+    tmdb = _RecordingSourceTMDB(response_for)
+
+    interrupted, pages_scanned, effective_pages, _raw = _run_tmdb_scan(sources, tmdb, stats)
+
+    assert interrupted is False
+    assert tmdb.calls == [("movie/popular", 1), ("tv/popular", 1)]
+    assert pages_scanned == 2
+    assert effective_pages == 2
+    assert stats["movie/popular"]["aborted"] == 1
+    assert stats["movie/popular"]["abort_status"] == 404
+    assert stats["tv/popular"]["pages_fetched"] == 1
+
+
+def test_later_tmdb_page_failure_does_not_abort_remaining_pages():
+    source = TMDBSource("movie/popular", "/movie/popular", "movie", 3)
+    stats = _source_stats([source])
+
+    def response_for(_source, page):
+        if page == 2:
+            return APIResponse(status=500, headers={}, data={}, text="temporary")
+        return APIResponse(
+            status=200,
+            headers={},
+            data={"total_pages": 3, "results": []},
+            text="",
+        )
+
+    tmdb = _RecordingSourceTMDB(response_for)
+
+    _run_tmdb_scan([source], tmdb, stats)
+
+    assert tmdb.calls == [("movie/popular", 1), ("movie/popular", 2), ("movie/popular", 3)]
+    assert stats["movie/popular"]["errors"] == 1
+    assert stats["movie/popular"]["aborted"] == 0
 
 
 def test_local_refresh_skips_tmdb_details_when_imdb_mapping_is_cached():

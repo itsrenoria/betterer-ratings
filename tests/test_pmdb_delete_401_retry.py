@@ -21,6 +21,7 @@ from betterer_ratings.core.parsing import first_non_empty
 from betterer_ratings.domain.models import APIResponse
 from betterer_ratings.providers.pmdb_client import PMDBClient
 from betterer_ratings.providers.pmdb_submission_rating import submit_rating
+from betterer_ratings.providers.pmdb_transport import post_with_gates
 from betterer_ratings.services.submit import handler_rating
 from betterer_ratings.services.submit.retry_policy import (
     format_manual_error,
@@ -207,6 +208,45 @@ def test_delete_403_ownership_and_404_handling_are_unchanged():
     missing = PMDBClient._to_delete_result(_response(status=404, text="missing"))
     assert missing.success is True
     assert missing.retryable is False
+
+
+def test_pmdb_manual_gates_defer_long_pause_with_remaining_retry_after():
+    class PausedGate(_FakeGate):
+        def __init__(self):
+            super().__init__()
+            self.budgets = []
+
+        async def acquire(self, max_pause_wait_seconds=None):
+            self.budgets.append(max_pause_wait_seconds)
+            return False
+
+        def pause_remaining(self):
+            return 3600
+
+    class Client:
+        max_pause_block_seconds = 20
+        api_gate = PausedGate()
+        http = None
+
+    response = asyncio.run(
+        post_with_gates(
+            Client(),
+            url="https://publicmetadb.com/api/external/mappings",
+            payload={"tmdb_id": 10},
+            contribution_gate=_FakeGate(),
+        )
+    )
+
+    assert response.status == 429
+    assert response.headers["retry-after"] == "3600"
+    assert response.text == "global gate paused"
+    assert Client.api_gate.budgets == [20]
+
+
+def test_retry_policy_never_shortens_a_long_provider_retry_after():
+    delay = retry_delay_seconds(retry_after_seconds=86_400, current_attempts=11)
+
+    assert delay >= 86_400
 
 
 def test_submit_rating_returns_retryable_300s_when_cached_id_delete_is_401():

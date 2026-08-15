@@ -29,85 +29,194 @@ async def submit_episode_ratings_batch(
     season = int(first["season"])
     label = str(first["label"])
     endpoint = "/api/external/episode-ratings/batch"
-    rows_to_create: list[Any] = []
+    rows_to_create: list[Any] = [
+        row for row in rows if not first_non_empty_fn(row["pmdb_item_id"])
+    ]
+    cached_rows = [row for row in rows if first_non_empty_fn(row["pmdb_item_id"])]
 
-    for row in rows:
+    def clear_cached_id(row: Any) -> None:
+        db.clear_episode_rating_pmdb_item_id(
+            tmdb_id,
+            media_type,
+            season,
+            int(row["episode"]),
+            str(row["label"]),
+        )
+
+    def mark_retryable_delete(
+        row: Any,
+        *,
+        status: int,
+        code: str,
+        message: str,
+        retry_after_seconds: int,
+        failure_endpoint: str,
+    ) -> None:
         episode = int(row["episode"])
-        item_id = first_non_empty_fn(row["pmdb_item_id"])
-        if not item_id:
-            rows_to_create.append(row)
-            continue
-        delete_result = await pmdb_client.delete_episode_rating_by_id(item_id)
-        if delete_result.success:
-            rows_to_create.append(row)
-            continue
-
-        message = delete_result.error_text or "Failed to delete existing episode rating"
-        if delete_result.retryable:
-            attempts = int(row["pmdb_attempts"] or 0)
-            pseudo_result = pmdb_submit_result_cls(
-                success=False,
-                retryable=True,
-                retry_after_seconds=max(5, int(delete_result.retry_after_seconds or 30)),
-                duplicate_or_exists=False,
-                error_text=message,
-                item_id=None,
-                status_code=int(delete_result.status_code or 0),
-                error_code=delete_result.error_code or "delete_failed",
-                endpoint=delete_result.endpoint or endpoint,
+        attempts = int(row["pmdb_attempts"] or 0)
+        pseudo_result = pmdb_submit_result_cls(
+            success=False,
+            retryable=True,
+            retry_after_seconds=max(5, retry_after_seconds),
+            duplicate_or_exists=False,
+            error_text=message,
+            item_id=None,
+            status_code=status,
+            error_code=code,
+            endpoint=failure_endpoint,
+        )
+        if attempts + 1 >= max_retry_attempts:
+            db.mark_episode_rating_failed(
+                tmdb_id,
+                media_type,
+                season,
+                episode,
+                str(row["label"]),
+                format_manual_error_fn(
+                    endpoint=failure_endpoint,
+                    status=status,
+                    code="max_retry_attempts_exceeded",
+                    retryable=False,
+                    message=(
+                        f"Exceeded max retry attempts ({max_retry_attempts}) "
+                        "for episode rating delete+create."
+                    ),
+                ),
             )
-            if attempts + 1 >= max_retry_attempts:
-                db.mark_episode_rating_failed(
-                    tmdb_id,
-                    media_type,
-                    season,
-                    episode,
-                    label,
-                    format_manual_error_fn(
-                        endpoint=delete_result.endpoint or endpoint,
-                        status=int(delete_result.status_code or 0),
-                        code="max_retry_attempts_exceeded",
-                        retryable=False,
-                        message=(
-                            f"Exceeded max retry attempts ({max_retry_attempts}) "
-                            "for episode rating delete+create."
-                        ),
-                    ),
-                )
-            else:
-                retry_delay = retry_delay_seconds_fn(pseudo_result, attempts)
-                retry_at = now_epoch_fn() + retry_delay
-                db.mark_episode_rating_retry(
-                    tmdb_id,
-                    media_type,
-                    season,
-                    episode,
-                    label,
-                    retry_at,
-                    format_manual_error_fn(
-                        endpoint=delete_result.endpoint or endpoint,
-                        status=int(delete_result.status_code or 0),
-                        code=delete_result.error_code or "delete_failed",
-                        retryable=True,
-                        message=message,
-                    ),
-                )
-            continue
-
-        db.mark_episode_rating_failed(
+            return
+        retry_delay = retry_delay_seconds_fn(pseudo_result, attempts)
+        db.mark_episode_rating_retry(
             tmdb_id,
             media_type,
             season,
             episode,
-            label,
+            str(row["label"]),
+            now_epoch_fn() + retry_delay,
             format_manual_error_fn(
-                endpoint=delete_result.endpoint or endpoint,
-                status=int(delete_result.status_code or 0),
-                code=delete_result.error_code or "delete_failed",
-                retryable=False,
+                endpoint=failure_endpoint,
+                status=status,
+                code=code or "delete_failed",
+                retryable=True,
                 message=message,
             ),
         )
+
+    if cached_rows:
+        cached_ids = [
+            str(first_non_empty_fn(row["pmdb_item_id"])) for row in cached_rows
+        ]
+        batch_delete_response = await pmdb_client.delete_episode_ratings_batch(cached_ids)
+        batch_status = int(batch_delete_response.status or 0)
+        cloudflare_challenge = is_cloudflare_challenge_fn(batch_delete_response)
+        transient_batch_failure = (
+            batch_status in {0, 401, 429}
+            or 500 <= batch_status <= 599
+            or cloudflare_challenge
+        )
+        batch_payload = (
+            batch_delete_response.data
+            if isinstance(batch_delete_response.data, dict)
+            else {}
+        )
+        deleted_ids_value = batch_payload.get("deletedIds")
+        deleted_ids = (
+            {
+                str(item_id)
+                for item_id in deleted_ids_value
+                if first_non_empty_fn(item_id)
+            }
+            if batch_status in {200, 207} and isinstance(deleted_ids_value, list)
+            else set()
+        )
+        logger.info(
+            "[Submitter] Episode batch delete: requested=%s deleted=%s unresolved=%s status=%s",
+            len(cached_ids),
+            len(deleted_ids),
+            len(cached_ids) - len(deleted_ids),
+            batch_status,
+            extra={
+                "event": "episode_ratings.batch_delete",
+                "requested": len(cached_ids),
+                "deleted": len(deleted_ids),
+                "unresolved": len(cached_ids) - len(deleted_ids),
+                "status": batch_status,
+            },
+        )
+        if transient_batch_failure:
+            retry_after = (
+                parse_retry_after_fn(
+                    batch_delete_response.headers.get("retry-after"), 30
+                )
+                if batch_status == 429
+                else (300 if batch_status == 401 or cloudflare_challenge else 30)
+            )
+            code = extract_error_code_fn(
+                batch_delete_response.data, batch_delete_response.text or ""
+            )
+            for row in rows:
+                mark_retryable_delete(
+                    row,
+                    status=batch_status,
+                    code=code or "batch_delete_failed",
+                    message=batch_delete_response.text or "Episode batch delete deferred",
+                    retry_after_seconds=retry_after,
+                    failure_endpoint=endpoint,
+                )
+            return
+
+        unresolved_cached_rows: list[Any] = []
+        for row in cached_rows:
+            item_id = str(first_non_empty_fn(row["pmdb_item_id"]))
+            if item_id in deleted_ids:
+                clear_cached_id(row)
+                rows_to_create.append(row)
+            else:
+                unresolved_cached_rows.append(row)
+
+        for row in unresolved_cached_rows:
+            episode = int(row["episode"])
+            item_id = str(first_non_empty_fn(row["pmdb_item_id"]))
+            delete_result = await pmdb_client.delete_episode_rating_by_id(item_id)
+            if delete_result.success:
+                clear_cached_id(row)
+                rows_to_create.append(row)
+                continue
+
+            message = delete_result.error_text or "Failed to delete existing episode rating"
+            not_owned = (
+                int(delete_result.status_code or 0) == 403
+                and "only delete your own data"
+                in f"{delete_result.error_code} {message}".lower()
+            )
+            if not_owned:
+                clear_cached_id(row)
+                rows_to_create.append(row)
+                continue
+            if delete_result.retryable:
+                mark_retryable_delete(
+                    row,
+                    status=int(delete_result.status_code or 0),
+                    code=delete_result.error_code or "delete_failed",
+                    message=message,
+                    retry_after_seconds=int(delete_result.retry_after_seconds or 30),
+                    failure_endpoint=delete_result.endpoint or endpoint,
+                )
+                continue
+
+            db.mark_episode_rating_failed(
+                tmdb_id,
+                media_type,
+                season,
+                episode,
+                label,
+                format_manual_error_fn(
+                    endpoint=delete_result.endpoint or endpoint,
+                    status=int(delete_result.status_code or 0),
+                    code=delete_result.error_code or "delete_failed",
+                    retryable=False,
+                    message=message,
+                ),
+            )
 
     if not rows_to_create:
         return

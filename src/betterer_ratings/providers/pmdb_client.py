@@ -11,6 +11,7 @@ from betterer_ratings.providers import pmdb_lookup as provider_pmdb_lookup
 from betterer_ratings.providers import pmdb_transport as provider_pmdb_transport
 from betterer_ratings.providers.pmdb_submission_episode import (
     delete_episode_rating_by_id,
+    delete_episode_ratings_batch,
     submit_episode_ratings_batch,
 )
 from betterer_ratings.providers.pmdb_submission_mapping import (
@@ -50,6 +51,7 @@ class PMDBClient:
         self.api_gate = api_gate
         self.rating_gate = rating_gate
         self.mapping_gate = mapping_gate
+        self.max_pause_block_seconds = 20
         self._logger = logger or logging.getLogger("betterer-ratings")
 
     def _headers(self) -> Dict[str, str]:
@@ -86,11 +88,13 @@ class PMDBClient:
         *,
         url: str,
         contribution_gate: Any,
+        payload: Optional[Dict[str, Any]] = None,
     ) -> APIResponse:
         return await provider_pmdb_transport.delete_with_gates(
             self,
             url=url,
             contribution_gate=contribution_gate,
+            payload=payload,
         )
 
     def _observe_submission_response(
@@ -323,6 +327,7 @@ class PMDBClient:
         media_type: str,
         id_type: str,
         id_value: str,
+        existing_pmdb_item_id: Optional[str] = None,
     ) -> PMDBSubmitResult:
         return await submit_mapping(
             self,
@@ -330,6 +335,7 @@ class PMDBClient:
             media_type=media_type,
             id_type=id_type,
             id_value=id_value,
+            existing_pmdb_item_id=existing_pmdb_item_id,
         )
 
     async def submit_episode_ratings_batch(
@@ -352,6 +358,12 @@ class PMDBClient:
 
     async def delete_episode_rating_by_id(self, rating_id: str) -> PMDBDeleteResult:
         return await self._delete_episode_rating_by_id(rating_id)
+
+    async def delete_episode_ratings_batch(
+        self,
+        rating_ids: Sequence[str],
+    ) -> APIResponse:
+        return await delete_episode_ratings_batch(self, rating_ids)
 
     async def aclose(self) -> None:
         await self.http.aclose()

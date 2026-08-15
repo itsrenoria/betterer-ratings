@@ -164,13 +164,13 @@ def test_html_403_is_a_cloudflare_challenge():
     assert m.PMDBClient._is_cloudflare_challenge(response) is True
 
 
-def test_just_a_moment_body_is_a_cloudflare_challenge():
+def test_non_html_just_a_moment_body_is_not_a_cloudflare_challenge():
     response = _response(
         status=403,
         headers={"content-type": "application/json"},
         text="Just a moment...",
     )
-    assert m.PMDBClient._is_cloudflare_challenge(response) is True
+    assert m.PMDBClient._is_cloudflare_challenge(response) is False
 
 
 def test_json_403_with_cf_ray_and_no_challenge_markers_is_not_a_challenge():

@@ -5,6 +5,7 @@ from typing import Any, List, Optional, cast
 
 from betterer_ratings.core.retry import parse_retry_after
 from betterer_ratings.domain.models import PMDBDeleteResult, PMDBSubmitResult
+from betterer_ratings.providers.pmdb_helpers import is_not_owned_delete_failure
 
 
 async def delete_rating_by_id(client: Any, rating_id: str) -> PMDBDeleteResult:
@@ -16,11 +17,6 @@ async def delete_rating_by_id(client: Any, rating_id: str) -> PMDBDeleteResult:
         response,
         endpoint=f"/api/external/ratings/{rating_id}",
     ))
-
-
-def _is_not_owned_delete_failure(delete_result: PMDBDeleteResult) -> bool:
-    text = f"{delete_result.error_code} {delete_result.error_text}".lower()
-    return int(delete_result.status_code or 0) == 403 and "only delete your own data" in text
 
 
 async def replace_rating_after_duplicate(
@@ -172,7 +168,7 @@ async def submit_rating(
     if existing_pmdb_item_id:
         delete_result = await client._delete_rating_by_id(existing_pmdb_item_id)
         if not delete_result.success:
-            if not _is_not_owned_delete_failure(delete_result):
+            if not is_not_owned_delete_failure(delete_result):
                 return PMDBSubmitResult(
                     success=False,
                     retryable=delete_result.retryable,

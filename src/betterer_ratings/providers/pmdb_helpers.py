@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from betterer_ratings.core.parsing import first_non_empty, parse_int
 from betterer_ratings.core.retry import parse_retry_after
@@ -15,9 +15,14 @@ def is_cloudflare_challenge(response: APIResponse) -> bool:
     # an actual interstitial/challenge page are used.
     if response.status != 403:
         return False
+    mitigation = response.headers.get("cf-mitigated", "").strip().lower()
+    if mitigation == "challenge":
+        return True
     content_type = response.headers.get("content-type", "").lower()
     response_text = (response.text or "").lower()
-    return "text/html" in content_type or "just a moment" in response_text
+    if "text/html" not in content_type:
+        return False
+    return "just a moment" in response_text or "attention required" in response_text
 
 
 def extract_item_id(payload: Any) -> Optional[str]:
@@ -83,6 +88,11 @@ def is_duplicate_or_exists_result(result: PMDBSubmitResult) -> bool:
     return False
 
 
+def is_not_owned_delete_failure(delete_result: PMDBDeleteResult) -> bool:
+    text = f"{delete_result.error_code} {delete_result.error_text}".lower()
+    return int(delete_result.status_code or 0) == 403 and "only delete your own data" in text
+
+
 def extract_entry_id(entry: Dict[str, Any]) -> Optional[str]:
     return first_non_empty(entry.get("id"), entry.get("item_id"))
 
@@ -102,6 +112,19 @@ def to_submit_result(response: APIResponse, endpoint: str = "") -> PMDBSubmitRes
             item_id,
             status_code=response.status,
             error_code="",
+            endpoint=endpoint,
+        )
+
+    if is_cloudflare_challenge(response):
+        return PMDBSubmitResult(
+            success=False,
+            retryable=True,
+            retry_after_seconds=300,
+            duplicate_or_exists=False,
+            error_text=text,
+            item_id=item_id,
+            status_code=response.status,
+            error_code="cloudflare_challenge",
             endpoint=endpoint,
         )
 
@@ -180,6 +203,17 @@ def to_delete_result(response: APIResponse, endpoint: str = "") -> PMDBDeleteRes
             text,
             status_code=response.status,
             error_code="",
+            endpoint=endpoint,
+        )
+
+    if is_cloudflare_challenge(response):
+        return PMDBDeleteResult(
+            success=False,
+            retryable=True,
+            retry_after_seconds=300,
+            error_text=text,
+            status_code=response.status,
+            error_code="cloudflare_challenge",
             endpoint=endpoint,
         )
 
@@ -278,14 +312,14 @@ def rating_entry_matches_score(entry: Dict[str, Any], score: float) -> bool:
     return existing_tenths == target_tenths
 
 
-def mapping_lookup_owned_by(payload: Any, tmdb_id: int, media_type: str) -> bool:
+def mapping_lookup_owner_keys(payload: Any) -> List[Tuple[int, str]]:
     if not isinstance(payload, dict):
-        return False
+        return []
     results = payload.get("results")
     if not isinstance(results, list):
-        return False
+        return []
 
-    wanted_media_type = media_type.strip().lower()
+    owners: List[Tuple[int, str]] = []
     for entry in results:
         if not isinstance(entry, dict):
             continue
@@ -296,9 +330,15 @@ def mapping_lookup_owned_by(payload: Any, tmdb_id: int, media_type: str) -> bool
         if entry_tmdb_id is None:
             continue
         entry_media_type = str(entry.get("media_type", "")).strip().lower()
-        if entry_tmdb_id == tmdb_id and entry_media_type == wanted_media_type:
-            return True
-    return False
+        if entry_media_type not in {"movie", "tv"}:
+            continue
+        owners.append((entry_tmdb_id, entry_media_type))
+    return owners
+
+
+def mapping_lookup_owned_by(payload: Any, tmdb_id: int, media_type: str) -> bool:
+    wanted = (tmdb_id, media_type.strip().lower())
+    return wanted in mapping_lookup_owner_keys(payload)
 
 
 def mapping_entry_matches_value(entry: Dict[str, Any], id_value: str) -> bool:

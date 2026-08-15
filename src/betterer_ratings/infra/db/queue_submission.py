@@ -126,14 +126,15 @@ def mark_mapping_submitted(
             """
             UPDATE mappings
             SET pmdb_status = 'submitted',
-                pmdb_item_id = COALESCE(?, pmdb_item_id),
+                pmdb_item_id = ?,
+                pmdb_item_value = CASE WHEN ? IS NULL THEN NULL ELSE id_value END,
                 pmdb_claimed_at = NULL,
                 pmdb_submitted_at = ?,
                 pmdb_last_error = NULL,
                 pmdb_retry_after = 0
             WHERE tmdb_id = ? AND media_type = ? AND id_type = ?
             """,
-            (pmdb_item_id, submitted_at, tmdb_id, media_type, id_type),
+            (pmdb_item_id, pmdb_item_id, submitted_at, tmdb_id, media_type, id_type),
         )
         record_submission_success(
             conn,

@@ -19,7 +19,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "tmdb": {
         "language": "en-US",
         "rate_limit": {
-            "requests": 45,
+            "requests": 40,
             "per_seconds": 1,
         },
         "sources": [
@@ -41,7 +41,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "exclude_unknown_year": True,
     },
     "mdblist": {
-        "batch_size": 100,
+        "batch_size": 200,
         "rate_limit": {
             "requests": 2,
             "per_seconds": 1,

@@ -1,10 +1,23 @@
 from __future__ import annotations
 
-from typing import Any, Dict, cast
+from typing import Any, Dict, Optional, cast
 
 from betterer_ratings.core.retry import parse_retry_after
 from betterer_ratings.core.urls import sanitize_url_for_logs
 from betterer_ratings.domain.models import APIResponse
+
+
+def _paused_response(gate: Any, text: str) -> APIResponse:
+    pause_remaining_fn = getattr(gate, "pause_remaining", None)
+    remaining = (
+        int(max(1, pause_remaining_fn())) if callable(pause_remaining_fn) else 1
+    )
+    return APIResponse(
+        status=429,
+        headers={"retry-after": str(remaining)},
+        data={"error": text, "retry_after": remaining},
+        text=text,
+    )
 
 
 async def post_with_gates(
@@ -15,13 +28,17 @@ async def post_with_gates(
     contribution_gate: Any,
 ) -> APIResponse:
     # Respect both global API rate and contribution/action-specific rate.
-    acquired_global = await client.api_gate.acquire()
+    acquired_global = await client.api_gate.acquire(
+        max_pause_wait_seconds=client.max_pause_block_seconds
+    )
     if not acquired_global:
-        return APIResponse(status=429, headers={}, data=None, text="global gate paused")
+        return _paused_response(client.api_gate, "global gate paused")
 
-    acquired_action = await contribution_gate.acquire()
+    acquired_action = await contribution_gate.acquire(
+        max_pause_wait_seconds=client.max_pause_block_seconds
+    )
     if not acquired_action:
-        return APIResponse(status=429, headers={}, data=None, text="action gate paused")
+        return _paused_response(contribution_gate, "action gate paused")
 
     response = await client.http.request_json(
         method="POST",
@@ -29,6 +46,7 @@ async def post_with_gates(
         headers=client._headers(),
         json_body=payload,
         gate=None,
+        max_pause_wait_seconds=client.max_pause_block_seconds,
     )
 
     observe_submission_response(
@@ -47,20 +65,27 @@ async def delete_with_gates(
     *,
     url: str,
     contribution_gate: Any,
+    payload: Optional[Dict[str, Any]] = None,
 ) -> APIResponse:
-    acquired_global = await client.api_gate.acquire()
+    acquired_global = await client.api_gate.acquire(
+        max_pause_wait_seconds=client.max_pause_block_seconds
+    )
     if not acquired_global:
-        return APIResponse(status=429, headers={}, data=None, text="global gate paused")
+        return _paused_response(client.api_gate, "global gate paused")
 
-    acquired_action = await contribution_gate.acquire()
+    acquired_action = await contribution_gate.acquire(
+        max_pause_wait_seconds=client.max_pause_block_seconds
+    )
     if not acquired_action:
-        return APIResponse(status=429, headers={}, data=None, text="action gate paused")
+        return _paused_response(contribution_gate, "action gate paused")
 
     response = await client.http.request_json(
         method="DELETE",
         url=url,
         headers=client._auth_headers(),
+        json_body=payload,
         gate=None,
+        max_pause_wait_seconds=client.max_pause_block_seconds,
     )
     observe_submission_response(
         client,
@@ -98,6 +123,12 @@ def observe_submission_response(
             method,
             safe_endpoint,
             retry_after,
+            extra={
+                "event": "pmdb.challenge_detected",
+                "method": method,
+                "endpoint": safe_endpoint,
+                "retry_after_seconds": retry_after,
+            },
         )
     elif response.status == 429:
         retry_after = parse_retry_after(response.headers.get("retry-after"), 5)

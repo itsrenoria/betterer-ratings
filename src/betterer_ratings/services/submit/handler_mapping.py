@@ -25,20 +25,47 @@ async def submit_mapping_group(
 
     unresolved = list(rows)
     resolved_count = 0
-    if lookup.status == 200 and isinstance(lookup.data, dict):
+    verified_cached_count = 0
+    lookup_valid = (
+        lookup.status == 200
+        and isinstance(lookup.data, dict)
+        and isinstance(lookup.data.get("mappings"), dict)
+    )
+    untrusted_cached_types: set[str] = set()
+    if lookup_valid:
         submitted_at = now_epoch_fn()
         for row in list(unresolved):
             id_type = str(row["id_type"])
             id_value = str(row["id_value"])
+            cached_item_id = str(row["pmdb_item_id"] or "").strip() or None
             entries = pmdb_client._extract_mappings_for_type(lookup.data, id_type)
-            matching_entry = next(
-                (
-                    entry
-                    for entry in entries
-                    if pmdb_client._mapping_entry_matches_value(entry, id_value)
-                ),
-                None,
-            )
+            if cached_item_id:
+                cached_entry = next(
+                    (
+                        entry
+                        for entry in entries
+                        if pmdb_client._extract_entry_id(entry) == cached_item_id
+                    ),
+                    None,
+                )
+                if cached_entry is None:
+                    db.clear_mapping_pmdb_item_id(tmdb_id, media_type, id_type)
+                    untrusted_cached_types.add(id_type)
+                    continue
+                matching_entry = (
+                    cached_entry
+                    if pmdb_client._mapping_entry_matches_value(cached_entry, id_value)
+                    else None
+                )
+            else:
+                matching_entry = next(
+                    (
+                        entry
+                        for entry in entries
+                        if pmdb_client._mapping_entry_matches_value(entry, id_value)
+                    ),
+                    None,
+                )
             if matching_entry is None:
                 continue
             db.mark_mapping_submitted(
@@ -46,9 +73,12 @@ async def submit_mapping_group(
                 media_type,
                 id_type,
                 submitted_at,
+                pmdb_item_id=cached_item_id,
             )
             unresolved.remove(row)
             resolved_count += 1
+            if cached_item_id:
+                verified_cached_count += 1
 
     if resolved_count:
         logger.info(
@@ -67,8 +97,47 @@ async def submit_mapping_group(
             },
         )
 
+    if verified_cached_count:
+        logger.info(
+            "[Submitter] Mapping cache verified: %s %s verified=%s",
+            media_type,
+            tmdb_id,
+            verified_cached_count,
+            extra={
+                "event": "mapping.cache_verified",
+                "entity": "mapping",
+                "media_type": media_type,
+                "tmdb_id": tmdb_id,
+                "verified": verified_cached_count,
+            },
+        )
+
+    replacement_count = sum(
+        1 for row in unresolved if str(row["pmdb_item_id"] or "").strip()
+    )
+    if replacement_count:
+        logger.info(
+            "[Submitter] Mapping cache replacement required: %s %s items=%s",
+            media_type,
+            tmdb_id,
+            replacement_count,
+            extra={
+                "event": "mapping.cache_replacement_required",
+                "entity": "mapping",
+                "media_type": media_type,
+                "tmdb_id": tmdb_id,
+                "items": replacement_count,
+            },
+        )
+
     for row in unresolved:
-        await submit_mapping_fn(row=row)
+        cached_item_id = str(row["pmdb_item_id"] or "").strip() or None
+        id_type = str(row["id_type"])
+        row_to_submit = row
+        if cached_item_id and (not lookup_valid or id_type in untrusted_cached_types):
+            row_to_submit = dict(row)
+            row_to_submit["pmdb_item_id"] = None
+        await submit_mapping_fn(row=row_to_submit)
 
 
 async def submit_mapping(
@@ -97,7 +166,25 @@ async def submit_mapping(
         media_type=media_type,
         id_type=id_type,
         id_value=id_value,
+        existing_pmdb_item_id=pmdb_item_id,
     )
+
+    if result.stale_cached_item_id and pmdb_item_id:
+        db.clear_mapping_pmdb_item_id(tmdb_id, media_type, id_type)
+        logger.info(
+            "[Submitter] Mapping cache invalidated before replacement: %s %s %s",
+            media_type,
+            tmdb_id,
+            id_type,
+            extra={
+                "event": "mapping.cache_invalidated",
+                "entity": "mapping",
+                "media_type": media_type,
+                "tmdb_id": tmdb_id,
+                "id_type": id_type,
+            },
+        )
+        pmdb_item_id = None
 
     if result.success:
         db.mark_mapping_submitted(
@@ -233,4 +320,16 @@ async def submit_mapping(
         id_type,
         id_value,
         result.error_text[:200],
+        extra={
+            "event": (
+                "mapping.foreign_owner_conflict"
+                if result.error_code == "mapping_owned_by_other"
+                else "mapping.failed"
+            ),
+            "entity": "mapping",
+            "media_type": media_type,
+            "tmdb_id": tmdb_id,
+            "id_type": id_type,
+            "error_code": result.error_code,
+        },
     )

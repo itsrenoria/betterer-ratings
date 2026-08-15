@@ -15,6 +15,8 @@ from betterer_ratings.domain.models import APIResponse
 
 
 class HTTPClient:
+    DEFAULT_MAX_PAUSE_WAIT_SECONDS = 20
+
     def __init__(
         self,
         timeout_seconds: int,
@@ -84,7 +86,7 @@ class HTTPClient:
         headers: Optional[Dict[str, str]] = None,
         json_body: Optional[Dict[str, Any]] = None,
         gate: Optional[Any] = None,
-        max_pause_wait_seconds: Optional[int] = None,
+        max_pause_wait_seconds: Optional[int] = DEFAULT_MAX_PAUSE_WAIT_SECONDS,
     ) -> APIResponse:
         last_response: Optional[APIResponse] = None
         safe_url = self._sanitize_url_for_logs(url)
@@ -94,10 +96,19 @@ class HTTPClient:
             if gate is not None:
                 acquired = await gate.acquire(max_pause_wait_seconds=max_pause_wait_seconds)
                 if not acquired:
+                    pause_remaining_fn = getattr(gate, "pause_remaining", None)
+                    pause_remaining = (
+                        int(max(1, pause_remaining_fn()))
+                        if callable(pause_remaining_fn)
+                        else int(max_pause_wait_seconds or 1)
+                    )
                     return APIResponse(
                         status=429,
-                        headers={},
-                        data={"error": "service paused"},
+                        headers={"retry-after": str(pause_remaining)},
+                        data={
+                            "error": "service paused",
+                            "retry_after": pause_remaining,
+                        },
                         text="service paused",
                     )
 
@@ -236,6 +247,23 @@ class HTTPClient:
                     format_duration(retry_after),
                 )
                 if attempt == self.max_retries - 1:
+                    return response
+                if (
+                    max_pause_wait_seconds is not None
+                    and retry_after > max_pause_wait_seconds
+                ):
+                    self._logger.warning(
+                        "Deferring %s %s for provider Retry-After=%s",
+                        method,
+                        safe_url,
+                        format_duration(retry_after),
+                        extra={
+                            "event": "http.rate_limit_deferred",
+                            "method": method,
+                            "endpoint": safe_url,
+                            "retry_after_seconds": retry_after,
+                        },
+                    )
                     return response
                 await asyncio.sleep(retry_after)
                 continue

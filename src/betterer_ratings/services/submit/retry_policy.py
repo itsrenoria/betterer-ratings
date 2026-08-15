@@ -43,5 +43,5 @@ def retry_delay_seconds(*, retry_after_seconds: int, current_attempts: int) -> i
     attempt_index = max(1, int(current_attempts) + 1)
     base = max(5, int(retry_after_seconds or 30))
     multiplier = min(2 ** max(0, attempt_index - 1), 64)
-    delay = min(base * multiplier, 6 * 3600)
+    delay = max(base, min(base * multiplier, 6 * 3600))
     return max(5, int(delay))

@@ -16,6 +16,20 @@ async def delete_episode_rating_by_id(client: Any, rating_id: str) -> PMDBDelete
     ))
 
 
+async def delete_episode_ratings_batch(
+    client: Any,
+    rating_ids: Sequence[str],
+) -> APIResponse:
+    return cast(
+        APIResponse,
+        await client._delete_with_gates(
+            url=f"{client.base_url}/api/external/episode-ratings/batch",
+            contribution_gate=client.rating_gate,
+            payload={"ids": list(rating_ids)[:50]},
+        ),
+    )
+
+
 async def submit_episode_ratings_batch(
     client: Any,
     *,

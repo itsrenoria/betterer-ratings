@@ -12,7 +12,7 @@ failed_retry_days = 7
 
 [tmdb]
 language = "en-US"
-rate_limit = { requests = 45, per_seconds = 1.0 }
+rate_limit = { requests = 40, per_seconds = 1.0 }
 
 [[tmdb.sources]]
 name = "movie/popular"
@@ -61,7 +61,9 @@ exclude_unknown_year = true
 
 [mdblist]
 rate_limit = { requests = 2, per_seconds = 1.0 }
-batch_size = 100
+batch_size = 200
+# MDBList accepts 1..200 IDs per ratings lookup request. This controls request
+# payload size only; plan-specific daily request quotas are tracked separately.
 # Optional: stop harvesting once MDBList's shared daily quota drains to this
 # many requests remaining, reserving that headroom for your own MDBList usage
 # (watchlist/history syncs, *arr lists, etc). 0 (default) = use the whole quota.
